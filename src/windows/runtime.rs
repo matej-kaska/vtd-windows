@@ -1,4 +1,4 @@
-use super::{audio::Recording, config::Config, engine::Engine};
+use super::{audio::Recording, config::Config, engine::Engine, tray};
 use anyhow::{Result, bail, ensure};
 use std::{
     cell::RefCell,
@@ -12,18 +12,25 @@ use std::{
 use windows_sys::Win32::{
     Foundation::*,
     System::{DataExchange::*, LibraryLoader::*, Memory::*, Threading::*},
-    UI::{Input::KeyboardAndMouse::*, WindowsAndMessaging::*},
+    UI::{
+        Input::KeyboardAndMouse::*,
+        Shell::{NIM_ADD, NIM_DELETE, NIM_MODIFY},
+        WindowsAndMessaging::*,
+    },
 };
 
 const COPY: u32 = WM_APP + 1;
 const KEY: u32 = WM_APP + 2;
 const RESULT: u32 = WM_APP + 3;
+const PAUSE: u32 = WM_APP + 5;
 static WINDOW: AtomicUsize = AtomicUsize::new(0);
 static TRIGGER: AtomicU32 = AtomicU32::new(119);
 static HELD: AtomicBool = AtomicBool::new(false);
 static TOGGLE: AtomicU32 = AtomicU32::new(120);
 static TOGGLE_HELD: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
+static PAUSED: AtomicBool = AtomicBool::new(false);
+static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static EPOCH: AtomicUsize = AtomicUsize::new(0);
 thread_local! { static APP: RefCell<Option<App>> = const { RefCell::new(None) }; }
 
@@ -72,7 +79,7 @@ struct App {
     last: String,
 }
 
-fn wide(s: &str) -> Vec<u16> {
+pub(super) fn wide(s: &str) -> Vec<u16> {
     s.encode_utf16().chain(Some(0)).collect()
 }
 
@@ -82,6 +89,19 @@ pub fn control(command: &str) -> Result<()> {
         ensure!(!hwnd.is_null(), "VTD is not running");
         if command == "stop" {
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        } else if command == "pause" || command == "resume" {
+            ensure!(
+                SendMessageTimeoutW(
+                    hwnd,
+                    PAUSE,
+                    usize::from(command == "pause"),
+                    0,
+                    SMTO_ABORTIFHUNG,
+                    2000,
+                    null_mut()
+                ) != 0,
+                "Cannot change pause state"
+            );
         } else if command == "copy" {
             let mut result = 0;
             ensure!(
@@ -131,6 +151,14 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
         );
         ensure!(!hwnd.is_null(), "Cannot create message window");
         WINDOW.store(hwnd as usize, Ordering::Relaxed);
+        TASKBAR_CREATED.store(
+            RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
+            Ordering::Relaxed,
+        );
+        ensure!(
+            tray::update(hwnd, "VTD", NIM_ADD),
+            "Cannot create tray icon"
+        );
         TRIGGER.store(cfg.trigger_key, Ordering::Relaxed);
         TOGGLE.store(cfg.toggle_key, Ordering::Relaxed);
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), instance, 0);
@@ -231,6 +259,7 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
         }
         UnhookWindowsHookEx(hook);
         UnhookWindowsHookEx(mouse);
+        tray::update(hwnd, "", NIM_DELETE);
         APP.with(|a| *a.borrow_mut() = None);
         CloseHandle(mutex);
     }
@@ -239,7 +268,7 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
 
 unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     unsafe {
-        if code == HC_ACTION as i32 {
+        if code == HC_ACTION as i32 && !PAUSED.load(Ordering::Relaxed) {
             let event = &*(l as *const KBDLLHOOKSTRUCT);
             {
                 let down = w as u32 == WM_KEYDOWN || w as u32 == WM_SYSKEYDOWN;
@@ -291,11 +320,39 @@ unsafe extern "system" fn mouse(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     unsafe {
+        if msg != 0 && msg == TASKBAR_CREATED.load(Ordering::Relaxed) {
+            let mut text = [0u16; 128];
+            let len = GetWindowTextW(hwnd, text.as_mut_ptr(), text.len() as i32);
+            tray::update(
+                hwnd,
+                &String::from_utf16_lossy(&text[..len as usize]),
+                NIM_ADD,
+            );
+            return 0;
+        }
         match msg {
-            KEY | RESULT | WM_TIMER => {
+            tray::EVENT => {
+                if l as u32 == WM_RBUTTONUP || l as u32 == WM_LBUTTONUP {
+                    match tray::menu(hwnd, PAUSED.load(Ordering::Relaxed)) {
+                        1 => APP.with(|a| {
+                            if let Some(app) = a.borrow_mut().as_mut() {
+                                app.pause(!PAUSED.load(Ordering::Relaxed));
+                            }
+                        }),
+                        2 => {
+                            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                        }
+                        _ => {}
+                    }
+                }
+                0
+            }
+            KEY | RESULT | WM_TIMER | PAUSE => {
                 APP.with(|a| {
                     if let Some(app) = a.borrow_mut().as_mut() {
-                        if msg == RESULT {
+                        if msg == PAUSE {
+                            app.pause(w != 0);
+                        } else if msg == RESULT {
                             app.results();
                         } else if msg == WM_TIMER && (w == 1 || app.finishing) {
                             app.stop(false);
@@ -322,7 +379,29 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
 }
 
 impl App {
+    fn pause(&mut self, paused: bool) {
+        PAUSED.store(paused, Ordering::Relaxed);
+        HELD.store(false, Ordering::Relaxed);
+        TOGGLE_HELD.store(false, Ordering::Relaxed);
+        if paused {
+            self.stop(true);
+        }
+        status(
+            self.hwnd,
+            if paused {
+                "VTD: pozastaveno"
+            } else if self.busy {
+                "VTD: zpracovávám"
+            } else {
+                "VTD: připraveno"
+            },
+        );
+    }
+
     fn key(&mut self, action: usize) {
+        if PAUSED.load(Ordering::Relaxed) {
+            return;
+        }
         if action == 2 {
             self.stop(true);
             return;
@@ -558,9 +637,15 @@ fn copy_text(hwnd: HWND, text: &str) -> Result<()> {
 }
 
 fn status(hwnd: HWND, text: &str) {
+    let text = if PAUSED.load(Ordering::Relaxed) {
+        "VTD: pozastaveno"
+    } else {
+        text
+    };
     unsafe {
         SetWindowTextW(hwnd, wide(text).as_ptr());
     }
+    tray::update(hwnd, text, NIM_MODIFY);
     eprintln!("{text}");
 }
 

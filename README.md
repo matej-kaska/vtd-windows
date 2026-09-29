@@ -2,7 +2,7 @@
 
 Offline, multilingual voice dictation for Windows. A minimal fork of [MQ37/vtd](https://github.com/MQ37/vtd), built with Rust, whisper.cpp and Vulkan.
 
-Runs in the background without a GUI, tray icon or cloud service. Audio stays on your computer. The microphone is active only while recording.
+Runs in the background with a small tray icon and no main window or cloud service. Audio stays on your computer. The microphone is active only while recording.
 
 ## Use
 
@@ -11,6 +11,8 @@ Extract the package into a writable folder and run `vtd.exe`.
 - **F8:** hold to record, release to finish.
 - **F9:** press to start, press again to finish.
 - **Esc:** cancel.
+
+Click the tray icon to **pause/resume** or **quit**. Pausing stops recording, prevents pending text insertion and lets F8/F9 pass through to other applications. The tooltip shows the current state.
 
 Choose the destination text field before finishing. You can switch away and back while recording. Once you finish, keep focus in that field until the text appears. Changes during transcription block automatic insertion; `vtd copy` recovers the last transcript.
 
@@ -52,6 +54,8 @@ Enable `clipboard_paste` if an editor drops or repeats typed characters. This re
 ```text
 vtd status
 vtd stop
+vtd pause
+vtd resume
 vtd copy
 vtd devices
 vtd autostart on|off

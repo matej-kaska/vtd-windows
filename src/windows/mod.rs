@@ -2,6 +2,7 @@ mod audio;
 mod config;
 mod engine;
 mod runtime;
+mod tray;
 
 use anyhow::{Result, bail, ensure};
 use std::{path::Path, time::Instant};
@@ -48,7 +49,7 @@ pub fn main() -> Result<()> {
         }
         Some("autostart") => runtime::autostart(args.get(1).map(String::as_str))?,
         Some("copy") => runtime::control("copy")?,
-        Some("status") => runtime::control("status")?,
+        Some(command @ ("status" | "pause" | "resume")) => runtime::control(command)?,
         Some("stop") => runtime::control("stop")?,
         None | Some("run") => {
             let capture_next = match &args[args.len().min(1)..] {
