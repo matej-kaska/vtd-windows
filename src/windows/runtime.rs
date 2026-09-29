@@ -95,7 +95,7 @@ pub fn control(command: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn run(cfg: Config) -> Result<()> {
+pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<()> {
     unsafe {
         let mutex = CreateMutexW(null_mut(), 0, wide("Local\\VTD-Windows").as_ptr());
         ensure!(!mutex.is_null(), "Cannot create instance lock");
@@ -183,6 +183,24 @@ pub fn run(cfg: Config) -> Result<()> {
                         engine = Some(Engine::load(&worker_cfg)?);
                     }
                     let samples = super::audio::resample(&job.samples, job.rate);
+                    if let Some(path) = capture_next.take() {
+                        let spec = hound::WavSpec {
+                            channels: 1,
+                            sample_rate: 16000,
+                            bits_per_sample: 32,
+                            sample_format: hound::SampleFormat::Float,
+                        };
+                        let file = std::fs::OpenOptions::new()
+                            .write(true)
+                            .create_new(true)
+                            .open(&path)?;
+                        let mut wav = hound::WavWriter::new(std::io::BufWriter::new(file), spec)?;
+                        for &sample in &samples {
+                            wav.write_sample(sample)?;
+                        }
+                        wav.finalize()?;
+                        eprintln!("VTD diagnostic saved: {}", path.display());
+                    }
                     engine.as_mut().unwrap().transcribe(&worker_cfg, &samples)
                 })();
                 send(Reply::Done(job.focus, result, start.elapsed()));
@@ -406,7 +424,9 @@ impl App {
                         Ok(text) if text.is_empty() => status(self.hwnd, "VTD: bez řeči"),
                         Ok(text) => {
                             self.last = text;
-                            if let Err(e) = insert(&self.last, focus) {
+                            if let Err(e) =
+                                insert(&self.last, focus, self.hwnd, self.cfg.clipboard_paste)
+                            {
                                 status(
                                     self.hwnd,
                                     &format!("{e}. Přepis je dostupný přes vtd copy."),
@@ -429,7 +449,7 @@ impl App {
     }
 }
 
-fn insert(text: &str, target: Focus) -> Result<()> {
+fn insert(text: &str, target: Focus, hwnd: HWND, clipboard: bool) -> Result<()> {
     ensure!(
         target.window != 0 && target == Focus::current(),
         "Změnilo se cílové okno nebo pole"
@@ -441,23 +461,43 @@ fn insert(text: &str, target: Focus) -> Result<()> {
                 "Je stisknutá modifikační klávesa"
             );
         }
-        let mut input = Vec::with_capacity(text.len() * 2);
-        for unit in text.encode_utf16() {
-            for flags in [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP] {
-                input.push(INPUT {
-                    r#type: INPUT_KEYBOARD,
-                    Anonymous: INPUT_0 {
-                        ki: KEYBDINPUT {
-                            wVk: 0,
-                            wScan: unit,
-                            dwFlags: flags,
-                            time: 0,
-                            dwExtraInfo: 0,
-                        },
+        let keys: Vec<(u16, u16, u32)> = if clipboard {
+            copy_text(hwnd, text)?;
+            ensure!(
+                target == Focus::current(),
+                "Změnilo se cílové okno nebo pole"
+            );
+            vec![
+                (VK_CONTROL, 0, 0),
+                (0x56, 0, 0),
+                (0x56, 0, KEYEVENTF_KEYUP),
+                (VK_CONTROL, 0, KEYEVENTF_KEYUP),
+            ]
+        } else {
+            text.encode_utf16()
+                .flat_map(|unit| {
+                    [
+                        (0, unit, KEYEVENTF_UNICODE),
+                        (0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
+                    ]
+                })
+                .collect()
+        };
+        let input: Vec<_> = keys
+            .into_iter()
+            .map(|(key, unit, flags)| INPUT {
+                r#type: INPUT_KEYBOARD,
+                Anonymous: INPUT_0 {
+                    ki: KEYBDINPUT {
+                        wVk: key,
+                        wScan: unit,
+                        dwFlags: flags,
+                        time: 0,
+                        dwExtraInfo: 0,
                     },
-                });
-            }
-        }
+                },
+            })
+            .collect();
         let sent = SendInput(
             input.len() as u32,
             input.as_ptr(),

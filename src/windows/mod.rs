@@ -51,8 +51,13 @@ pub fn main() -> Result<()> {
         Some("status") => runtime::control("status")?,
         Some("stop") => runtime::control("stop")?,
         None | Some("run") => {
+            let capture_next = match &args[args.len().min(1)..] {
+                [] => None,
+                [flag, path] if flag == "--capture-next" => Some(std::path::PathBuf::from(path)),
+                _ => bail!("Use: vtd run [--capture-next FILE.wav]"),
+            };
             config::Config::write_default(&config_path)?;
-            runtime::run(config::Config::load(&config_path)?)?;
+            runtime::run(config::Config::load(&config_path)?, capture_next)?;
         }
         Some(other) => bail!("Unknown command: {other}; use vtd --help"),
     }

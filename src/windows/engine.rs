@@ -104,7 +104,7 @@ impl Engine {
         params.set_suppress_blank(true);
         params.set_suppress_nst(true);
         params.set_temperature(0.0);
-        params.set_temperature_inc(0.0);
+        params.set_temperature_inc(0.2);
         self.state.full(params, samples)?;
         let mut text = String::new();
         for segment in self.state.as_iter() {

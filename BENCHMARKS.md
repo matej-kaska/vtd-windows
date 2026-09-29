@@ -1,5 +1,7 @@
 # Local validation
 
+One user-authorized 14.100 s microphone sample produced identical complete text with Q5, Q8 and F16 (0.502, 0.724 and 0.516 s respectively). The previous decoder also produced the same text (0.505 s). This sample did not reproduce the reported repeated punctuation. The user reported correct insertion in Codex but broken output in a text editor; clipboard paste is now available as an alternative input path, pending verification in that editor. Standard temperature fallback (increment 0.2) has been restored; it was previously disabled. Raw audio and transcripts are excluded from the repository.
+
 After reports of missing words in real dictation, the decoder was changed to beam search (width 5) and microphone release now includes a 250 ms capture tail. With the Q5 model, three repetitions took 0.285–0.340 s for the short sample and 0.606–0.670 s for the long sample. Text was unchanged on these synthetic samples. A 55.742 s concatenation of the long sample retained all three copies (1.644 s inference). This rules out a general 30-second truncation on that input, but does not establish the cause of missing words in microphone dictation. Capture diagnostics now report device, captured duration, elapsed duration and RMS without saving audio or transcript. Natural-speech improvement is not yet verified.
 
 ## Earlier greedy baseline

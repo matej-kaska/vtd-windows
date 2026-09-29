@@ -30,6 +30,7 @@ Po stažení není potřeba připojení. AMD ovladač musí obsahovat Vulkan. Py
 | `language` | `cs` | Jazyk přepisu |
 | `trigger_key` | `119` | F8; povolené F1–F24: 112–135 |
 | `toggle` | `false` | `true`: jednou stisknout pro začátek, podruhé pro konec |
+| `clipboard_paste` | `false` | `true`: vložit celý přepis přes schránku a Ctrl+V; přepis nahradí obsah schránky |
 | `microphone` | `null` | Výchozí mikrofon; jinak přesný název z `vtd devices` |
 | `gpu` | `null` | Automaticky samostatná GPU, jinak první dostupná; lze zadat index |
 | `idle_unload_seconds` | `300` | Po 5 minutách uvolnit model; `0` ho ponechá načtený |
@@ -42,7 +43,7 @@ Po stažení není potřeba připojení. AMD ovladač musí obsahovat Vulkan. Py
 
 ## Omezení
 
-Vkládání používá Unicode SendInput a běžně nemění schránku. Některé editory tento vstup nepřijímají; pro ně použij ruční kopírování. VTD spuštěné bez správce nemůže vkládat do aplikací spuštěných jako správce. Program si oprávnění sám nezvyšuje.
+Výchozí vkládání používá Unicode SendInput a nemění schránku. Pokud editor ztrácí nebo opakuje znaky, nastav `clipboard_paste: true`. Tento režim vloží text přes Ctrl+V a ponechá ve schránce poslední přepis; předchozí obsah neobnovuje. VTD spuštěné bez správce nemůže vkládat do aplikací spuštěných jako správce. Program si oprávnění sám nezvyšuje.
 
 Kontrola okna a aktivity výrazně omezuje vložení jinam, ale není transakcí s cílovým editorem. Během vkládání neměň fokus. Filtr ticha není plnohodnotný rozpoznávač řeči; hluk může vyvolat chybný přepis.
 
@@ -64,3 +65,5 @@ Krátká výchozí cesta `C:\vtd-build` obchází limit délky cest nástrojů W
 `vtd transcribe nahravka.wav 5` změří opakované přepisy s jednou načteným modelem. Diagnostika jde na stderr, text na stdout. Běžné diktování text neloguje; diagnostika obsahuje název mikrofonu, délku zachyceného zvuku, dobu záznamu a RMS hlasitost.
 
 Původní linuxový program a jeho instalační skripty jsou zachovány. Nová část je v `src/windows`.
+
+Pro jednorázovou diagnostiku lze spustit `vtd run --capture-next test.wav`. Uloží pouze první dokončený záznam (mono, 16 kHz, float WAV) lokálně; existující soubor nepřepíše. Běžné spuštění nic neukládá. Dekodér používá standardní teplotní fallback při neúspěšném dekódování.
