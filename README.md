@@ -1,177 +1,78 @@
 # VTD Windows
 
-A minimal Windows fork of [MQ37/vtd](https://github.com/MQ37/vtd). Hold F8 or tap F9 to start/stop Czech dictation locally. No GUI, tray icon, cloud, Electron, Python runtime, or always-on microphone.
+Offline, multilingual voice dictation for Windows. A minimal fork of [MQ37/vtd](https://github.com/MQ37/vtd), built with Rust, whisper.cpp and Vulkan.
 
-Rust + whisper.cpp + Vulkan. One x64 build targets AMD discrete GPUs and Strix Halo. Keeps the model warm, releases it after inactivity, and checks focus before typing. The original Linux implementation is preserved below.
+Runs in the background without a GUI, tray icon or cloud service. Audio stays on your computer. The microphone is active only while recording.
 
-**[Windows setup, configuration and build instructions (Czech)](WINDOWS.md)** ? **[Measured results](BENCHMARKS.md)**
+## Use
 
----
+Extract the package into a writable folder and run `vtd.exe`.
 
-<p align="center">
-  <img src="logo.svg" alt="vtd mascot" width="160">
-</p>
+- **F8:** hold to record, release to finish.
+- **F9:** press to start, press again to finish.
+- **Esc:** cancel.
 
-# vtd
+Choose the destination text field before finishing. You can switch away and back while recording. Once you finish, keep focus in that field until the text appears. Changes during transcription block automatic insertion; `vtd copy` recovers the last transcript.
 
-A tiny, no-UI, push-to-talk voice dictation daemon for Linux. Hold a key, talk,
-release â€” your speech is transcribed locally (via [whisper.cpp](https://github.com/ggml-org/whisper.cpp))
-and typed directly into whatever text field is focused, anywhere on your desktop.
+The model stays loaded for five minutes after use, then releases memory. The next dictation reloads it. Recordings are not saved by default.
 
-No Electron app, no tray icon, no cloud API calls. Just a background process
-that watches one key and a keyboard-injection call.
+The package needs a Vulkan-capable GPU driver. No Rust, Python or Vulkan SDK installation is needed to run it. The x64 build targets discrete GPUs and AMD Strix Halo; Strix Halo still needs testing on that hardware.
 
-## Runs GPU-accelerated on AMD Strix Halo (Ryzen AI Max / Radeon 8060S, gfx1151)
+If the model is missing, run this from the extracted package:
 
-This project was built and is actively used on an **AMD Ryzen AI Max ("Strix
-Halo") APU with Radeon 8060S graphics (gfx1151)**, transcribing with
-whisper.cpp's `large-v3-turbo` model fully offloaded to the integrated GPU via
-ROCm/HIP â€” under a second per utterance, no CPU fallback needed. If you're
-looking for a dictation tool that actually uses your Strix Halo GPU instead of
-falling back to CPU, this repo includes the exact ROCm compatibility patch and
-build script that got HIP acceleration working (see
-[`patches/`](patches/) and [Known issues](#known-issues) below).
-
-It should also work on any other AMD GPU ROCm supports, or CPU-only anywhere
-`whisper.cpp` runs.
-
-## Works well on Wayland
-
-Unlike tools built on `wtype` (which relies on the Wayland virtual-keyboard
-protocol and simply doesn't work on compositors that don't implement it, like
-mutter), `vtd` injects keystrokes through the kernel's `/dev/uinput` via
-`ydotool` â€” compositor-agnostic by construction. It's actively developed and
-tested on **Ubuntu with GNOME on Wayland**, where `wtype`-based tools fail
-outright, and the same approach should work unmodified on KDE, sway, or X11.
-
-## Why
-
-Tools like [Handy](https://github.com/cjpais/handy) are great, but on GNOME/
-Wayland their input-injection layer (`wtype`, which relies on the Wayland
-virtual-keyboard protocol) simply doesn't work â€” mutter doesn't implement that
-protocol. `vtd` instead injects keystrokes through the kernel's `/dev/uinput`
-via [`ydotool`](https://github.com/ReimuNotMoe/ydotool), which bypasses the
-compositor entirely and works the same way on GNOME, KDE, sway, or anything
-else.
-
-It's also intentionally minimal: one Rust binary, zero external crates, no
-UI. It reads raw keyboard events, shells out to `pw-record`, `whisper-cli`,
-and `ydotool`, and that's the whole program.
-
-## How it works
-
-1. A background thread reads raw `evdev` events from your keyboard device,
-   watching for a specific key (default: Right Alt).
-2. On key-down, `pw-record` starts capturing 16kHz mono audio from your
-   default microphone (or a configured PipeWire source).
-3. While the key stays down, short repeated "pulses" from the keyboard are
-   treated as "still held" (many keyboards/firmware don't report a clean
-   continuous hold, they re-fire make/break events every few hundred ms).
-   Once no pulse arrives for ~500ms, the key is considered released.
-4. The recording is stopped and handed to `whisper-cli` for local
-   transcription.
-5. The resulting text is typed into whatever's focused via `ydotool type`.
-
-No audio or text ever leaves your machine.
-
-## Requirements
-
-- Linux with `/dev/uinput` access (works on GNOME, KDE, sway, X11, Wayland â€”
-  anything, since injection is kernel-level, not compositor-level)
-- [`ydotool`](https://github.com/ReimuNotMoe/ydotool) installed
-- PipeWire (`pw-record`) for audio capture
-- `curl`, `git`, `cmake`, a C++ toolchain (to build whisper.cpp)
-- Rust/cargo (to build `vtd` itself)
-- Read access to your keyboard's `/dev/input/eventN` node, and read/write
-  access to `/dev/uinput` (see [Permissions](#permissions) below)
-
-## Quickstart
-
-```sh
-# 1. Build whisper.cpp (auto-detects ROCm/HIP, falls back to CPU)
-./scripts/build-whisper.sh
-
-# 2. Build vtd
-cargo build --release
-
-# 3. Download a model and install as a systemd --user service
-./target/release/vtd install --model large-v3-turbo
+```powershell
+powershell -ExecutionPolicy Bypass -File .\download-model.ps1 -Destination .\models
 ```
-
-That's it â€” hold Right Alt, speak, release, and the transcription gets typed
-wherever your cursor is focused.
-
-Check on it any time with:
-
-```sh
-vtd status
-```
-
-Uninstall the service (models and the whisper.cpp checkout are left in place):
-
-```sh
-vtd uninstall
-```
-
-## Choosing a model
-
-`vtd install --model <name>` accepts any of whisper.cpp's standard ggml
-models: `tiny`, `tiny.en`, `base`, `base.en`, `small`, `small.en`, `medium`,
-`medium.en`, `large-v1`, `large-v2`, `large-v3`, `large-v3-turbo`. Smaller
-models are faster but less accurate; `large-v3-turbo` is the default and, on
-GPU, still transcribes a several-second utterance in under a second.
-
-## Permissions
-
-`vtd` needs to read your keyboard device and write to `/dev/uinput`. The
-simplest fix is adding yourself to the relevant groups and re-logging in:
-
-```sh
-sudo usermod -aG input $USER
-```
-
-`/dev/uinput` access varies by distro; if `ydotool` reports it can't open the
-device, either add a udev rule granting your user/group access, or grant a
-one-off ACL to test with: `sudo setfacl -m u:$USER:rw /dev/uinput`.
 
 ## Configuration
 
-All configuration is environment variables, forwarded into the systemd unit
-at `vtd install` time if set beforehand:
+Edit `vtd.json` beside the executable, then restart VTD.
 
-| Variable | Default | Purpose |
-|---|---|---|
-| `VTD_KEYBOARD_DEVICE` | autodetected | `/dev/input/eventN` for your keyboard |
-| `VTD_TRIGGER_KEY` | `100` (`KEY_RIGHTALT`) | Linux key code to hold |
-| `VTD_MIC_TARGET` | PipeWire default | PipeWire source target id/name |
-| `VTD_WHISPER_BIN` | `~/.local/share/vtd/whisper.cpp/build/bin/whisper-cli` | path to whisper-cli |
-| `VTD_WHISPER_MODEL` | `~/.local/share/vtd/models/ggml-large-v3-turbo.bin` | path to a ggml model |
-| `VTD_WHISPER_LD_LIBRARY_PATH` | unset | extra `LD_LIBRARY_PATH` for whisper-cli (non-standard ROCm installs) |
+| Setting | Default | Purpose |
+| --- | --- | --- |
+| `language` | `cs` | Language code, e.g. `cs`, `en`, `de`; `auto` detects the language |
+| `microphone` | `null` | System default, or an exact name from `vtd devices` |
+| `gpu` | `null` | Prefer discrete GPU, otherwise first available; or choose its index |
+| `clipboard_paste` | `false` | Paste using Ctrl+V instead of typing Unicode characters |
+| `trigger_key` | `119` | Hold-to-record key, F8 |
+| `toggle_key` | `120` | Start/stop key, F9; must differ from `trigger_key` |
+| `toggle` | `false` | Also make `trigger_key` a start/stop key |
+| `idle_unload_seconds` | `300` | Unload the idle model; `0` keeps it loaded |
+| `max_recording_seconds` | `120` | Recording limit, up to 300 seconds |
+| `silence_rms` | `0.002` | Silence threshold |
+| `threads` | `4` | CPU worker threads |
+| `model` | `models/ggml-large-v3-turbo-q5_0.bin` | Model path, relative to the configuration or absolute |
 
-Keyboard device autodetection walks `/proc/bus/input/devices` looking for a
-device with a `kbd` event handler, preferring one with "keyboard" in its
-name. It isn't foolproof on every laptop/keyboard combination â€” if `vtd`
-picks the wrong device (or your Right Alt doesn't fire, e.g. no physical key
-present), override `VTD_KEYBOARD_DEVICE` / `VTD_TRIGGER_KEY` directly. You can
-find your keyboard's event number and a candidate trigger key's code by
-watching `cat /proc/bus/input/devices` and reading raw events from the
-candidate `/dev/input/eventN`.
+The model supports multiple languages; `cs` is only the initial configuration. Set a language explicitly for predictable short dictation, or use `auto`.
 
-## Known issues
+Enable `clipboard_paste` if an editor drops or repeats typed characters. This replaces the clipboard with the latest transcript. Applications running as administrator may reject insertion from VTD running without elevation.
 
-**Old system HIP headers can shadow a newer ROCm install.** On some systems
-with more than one HIP/ROCm installation (e.g. a distro-packaged `hip-dev` in
-`/usr/include` alongside a newer install elsewhere), the compiler's HIP
-driver mode adds your real ROCm include path via low-priority `-idirafter`,
-while `/usr/include` is always searched first â€” so a stale `hip_version.h`
-wins and whisper.cpp's HIP compatibility shims pick the wrong preprocessor
-branch, breaking the build with errors about `hipblasDatatype_t` or
-`hipStreamWaitEvent`. `scripts/build-whisper.sh` works around this with an
-explicit `-isystem $ROCM_PATH/include`, which takes priority over
-`-idirafter`. `patches/rocm-7.14-hipblas-compat.patch` additionally restores
-a default `flags` argument to `hipStreamWaitEvent` that ROCm's HIP runtime
-dropped relative to what whisper.cpp's CUDA-compat macro assumes.
+## Commands
 
-## License
+```text
+vtd status
+vtd stop
+vtd copy
+vtd devices
+vtd autostart on|off
+vtd transcribe recording.wav [REPEATS]
+vtd run --capture-next test.wav
+```
 
-Public domain, [The Unlicense](LICENSE).
+Autostart is opt-in. `--capture-next` explicitly saves only the next completed recording locally, without overwriting an existing file. Normal dictation logs timing and microphone diagnostics, not transcripts.
+
+## Build
+
+Requires Rust stable, Visual Studio C++ Build Tools with Windows SDK, CMake/Ninja, Vulkan SDK and libclang. Setup also needs Python and 7-Zip.
+
+```powershell
+.\scripts\setup-windows.ps1
+.\scripts\build-windows.ps1
+.\scripts\build-windows.ps1 -Test
+.\scripts\download-model.ps1
+.\scripts\package-windows.ps1 -WithModel
+```
+
+The build uses `C:\vtd-build` to avoid Windows path-length limits. Override it with `-BuildDir`. CPU-specific native optimizations are disabled for portability; Vulkan selects the GPU at runtime.
+
+The original Linux source is retained. See [upstream](https://github.com/MQ37/vtd) for Linux instructions. Windows code lives in `src/windows`.

@@ -80,7 +80,7 @@ impl Config {
             "silence_rms must be 0-0.1"
         );
         ensure!(
-            whisper_rs::get_lang_id(&self.language).is_some(),
+            self.language == "auto" || whisper_rs::get_lang_id(&self.language).is_some(),
             "Unknown language"
         );
         Ok(())

@@ -11,7 +11,7 @@ pub fn main() -> Result<()> {
     let config_path = config::path()?;
     match args.first().map(String::as_str) {
         Some("help" | "--help" | "-h") => println!(
-            "VTD Windows - offline Czech GPU dictation\n\n  vtd run                 Background process; hold F8 or tap F9 to start/stop, Esc to cancel\n  vtd status / stop / copy  Query state, stop, or copy last transcript\n  vtd devices             List Vulkan GPUs and microphones\n  vtd init                Create vtd.json beside the executable\n  vtd transcribe FILE.wav [REPEATS]\n                          Print transcript and warm/cold timings\n  vtd autostart on|off     Enable/disable startup for this user\n\nConfiguration: vtd.json beside the executable; restart after changes.\nModel paths are relative to vtd.json. Default language: cs.\n"
+            "VTD Windows - offline multilingual GPU dictation\n\n  vtd run                 Background process; hold F8 or tap F9 to start/stop, Esc to cancel\n  vtd status / stop / copy  Query state, stop, or copy last transcript\n  vtd devices             List Vulkan GPUs and microphones\n  vtd init                Create vtd.json beside the executable\n  vtd transcribe FILE.wav [REPEATS]\n                          Print transcript and warm/cold timings\n  vtd autostart on|off     Enable/disable startup for this user\n\nConfiguration: vtd.json beside the executable; restart after changes.\nModel paths are relative to vtd.json. Default language: cs.\n"
         ),
         Some("devices") => {
             for g in engine::gpus() {

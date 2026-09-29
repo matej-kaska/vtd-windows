@@ -364,6 +364,7 @@ impl App {
 
     fn finish(&mut self) {
         if self.recording.is_some() && !self.finishing {
+            self.recording.as_mut().unwrap().1 = Focus::current();
             self.finishing = true;
             unsafe {
                 if SetTimer(self.hwnd, 2, 250, None) == 0 {
@@ -377,9 +378,12 @@ impl App {
         if cancel {
             EPOCH.fetch_add(1, Ordering::Relaxed);
         }
-        let Some((recording, focus)) = self.recording.take() else {
+        let Some((recording, mut focus)) = self.recording.take() else {
             return;
         };
+        if !self.finishing && !cancel {
+            focus = Focus::current();
+        }
         unsafe {
             KillTimer(self.hwnd, 1);
             KillTimer(self.hwnd, 2);

@@ -6,7 +6,11 @@ New-Item -ItemType Directory -Force $output | Out-Null
 Copy-Item "$BuildDir\release\vtd.exe" $output
 & "$output\vtd.exe" init
 if ($LASTEXITCODE -ne 0) { throw 'Cannot initialize packaged executable' }
-Copy-Item "$root\LICENSE", "$root\WINDOWS.md" $output
+Copy-Item "$root\LICENSE", "$root\README.md" $output
+foreach ($name in @('WINDOWS.md', 'BENCHMARKS.md')) {
+    $obsolete = Join-Path $output $name
+    if (Test-Path -LiteralPath $obsolete) { Remove-Item -LiteralPath $obsolete }
+}
 Copy-Item "$root\scripts\download-model.ps1" $output
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vs = & $vswhere -latest -products '*' -property installationPath

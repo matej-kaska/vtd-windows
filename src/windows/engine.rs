@@ -67,7 +67,7 @@ impl Engine {
         let ctx = WhisperContext::new_with_params(&cfg.model, params).context("Loading Whisper")?;
         ensure!(
             ctx.is_multilingual(),
-            "Use a multilingual model for Czech, not an .en model"
+            "Use a multilingual model, not an .en model"
         );
         let state = ctx.create_state()?;
         let mut engine = Self { state };
@@ -93,7 +93,7 @@ impl Engine {
             patience: -1.0,
         });
         params.set_n_threads(cfg.threads);
-        params.set_language(Some(&cfg.language));
+        params.set_language((cfg.language != "auto").then_some(cfg.language.as_str()));
         params.set_translate(false);
         params.set_no_context(true);
         params.set_no_timestamps(true);
