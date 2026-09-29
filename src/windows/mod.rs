@@ -3,6 +3,7 @@ mod config;
 mod engine;
 mod runtime;
 mod tray;
+mod worker;
 
 use anyhow::{Result, bail, ensure};
 use std::{path::Path, time::Instant};
@@ -11,6 +12,7 @@ pub fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config_path = config::path()?;
     match args.first().map(String::as_str) {
+        Some("__worker") => worker::run(&config::Config::load(&config_path)?)?,
         Some("help" | "--help" | "-h") => println!(
             "VTD Windows - offline multilingual GPU dictation\n\n  vtd run                 Background process; hold F8 or tap F9 to start/stop, Esc to cancel\n  vtd status / stop / copy  Query state, stop, or copy last transcript\n  vtd devices             List Vulkan GPUs and microphones\n  vtd init                Create vtd.json beside the executable\n  vtd transcribe FILE.wav [REPEATS]\n                          Print transcript and warm/cold timings\n  vtd autostart on|off     Enable/disable startup for this user\n\nConfiguration: vtd.json beside the executable; restart after changes.\nModel paths are relative to vtd.json. Default language: cs.\n"
         ),

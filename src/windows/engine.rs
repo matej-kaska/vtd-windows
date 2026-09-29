@@ -80,11 +80,20 @@ impl Engine {
     }
 
     pub fn transcribe(&mut self, cfg: &Config, samples: &[f32]) -> Result<String> {
-        if samples.len() < 4800 || !audio::audible(samples, cfg.silence_rms) {
+        ensure!(samples.len() <= 16000 * 300, "Recording exceeds 5 minutes");
+        if samples.len() < 4800 {
             return Ok(String::new());
         }
-        ensure!(samples.len() <= 16000 * 300, "Recording exceeds 5 minutes");
-        self.decode(cfg, samples)
+        let samples = audio::speech(samples, cfg.silence_rms);
+        if samples.is_empty() {
+            return Ok(String::new());
+        }
+        let mut text = self.decode(cfg, samples)?;
+        if cfg.filter_subtitle_credits {
+            let len = without_subtitle_credit(&text).len();
+            text.truncate(len);
+        }
+        Ok(text)
     }
 
     fn decode(&mut self, cfg: &Config, samples: &[f32]) -> Result<String> {
@@ -111,5 +120,58 @@ impl Engine {
             text.push_str(&segment.to_str_lossy()?);
         }
         Ok(text.trim().to_owned())
+    }
+}
+
+fn without_subtitle_credit(text: &str) -> &str {
+    let end = text
+        .trim_end_matches(|c: char| c.is_whitespace() || matches!(c, '.' | ',' | '!' | ';' | '…'));
+    let mut words = end.split_whitespace().rev();
+    let Some(name) = words.next() else {
+        return text;
+    };
+    let name = name.to_lowercase();
+    let valid = match name.as_str() {
+        "johnyx" | "johnnyx" => true,
+        "x" => words
+            .next()
+            .is_some_and(|w| matches!(w.to_lowercase().as_str(), "johny" | "johnny")),
+        _ => false,
+    };
+    if !valid
+        || !words
+            .next()
+            .is_some_and(|w| matches!(w.to_lowercase().as_str(), "vytvořil" | "vytvoril"))
+    {
+        return text;
+    }
+    let Some(word) = words.next().filter(|w| w.to_lowercase() == "titulky") else {
+        return text;
+    };
+    text[..word.as_ptr() as usize - text.as_ptr() as usize].trim_end()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::without_subtitle_credit;
+    #[test]
+    fn removes_only_known_trailing_credit() {
+        assert_eq!(
+            without_subtitle_credit("Hotovo. Titulky vytvořil JohnyX."),
+            "Hotovo."
+        );
+        assert_eq!(without_subtitle_credit("TITULKY VYTVOŘIL JOHNNY X!"), "");
+        for text in [
+            "Titulky vytvořil Petr.",
+            "Děkuji za pozornost.",
+            "Titulky vytvořil JohnyX. To je chyba.",
+            "Řekl jsem JohnyX.",
+        ] {
+            assert_eq!(without_subtitle_credit(text), text);
+        }
+        assert_eq!(
+            without_subtitle_credit("İstanbul. Titulky vytvořil JohnyX."),
+            "İstanbul."
+        );
     }
 }

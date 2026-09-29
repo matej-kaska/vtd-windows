@@ -1,4 +1,4 @@
-use super::{audio::Recording, config::Config, engine::Engine, tray};
+use super::{audio::Recording, config::Config, tray, worker::Worker};
 use anyhow::{Result, bail, ensure};
 use std::{
     cell::RefCell,
@@ -63,9 +63,13 @@ struct Job {
     focus: Focus,
 }
 enum Reply {
-    Ready,
     Unloaded,
     Done(Focus, Result<String>, Duration),
+}
+enum Request {
+    Warm,
+    Unload,
+    Transcribe(Job),
 }
 struct App {
     cfg: Config,
@@ -74,7 +78,7 @@ struct App {
     finishing: bool,
     hold_recording: bool,
     busy: bool,
-    tx: mpsc::Sender<Job>,
+    tx: mpsc::Sender<Request>,
     rx: mpsc::Receiver<Reply>,
     last: String,
 }
@@ -165,7 +169,7 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
         ensure!(!hook.is_null(), "Cannot register keyboard hook");
         let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse), instance, 0);
         ensure!(!mouse.is_null(), "Cannot register mouse hook");
-        let (tx, jobs) = mpsc::channel::<Job>();
+        let (tx, jobs) = mpsc::channel::<Request>();
         let (replies, rx) = mpsc::channel();
         let worker_cfg = cfg.clone();
         let address = hwnd as usize;
@@ -174,29 +178,15 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
                 let _ = replies.send(r);
                 PostMessageW(address as HWND, RESULT, 0, 0);
             };
-            let mut engine = match Engine::load(&worker_cfg) {
-                Ok(e) => {
-                    send(Reply::Ready);
-                    Some(e)
-                }
-                Err(e) => {
-                    send(Reply::Done(
-                        Focus {
-                            window: 0,
-                            control: 0,
-                            epoch: 0,
-                        },
-                        Err(e),
-                        Duration::ZERO,
-                    ));
-                    None
-                }
-            };
+            let mut engine: Option<Worker> = None;
             loop {
                 let job = if engine.is_some() && worker_cfg.idle_unload_seconds > 0 {
                     match jobs.recv_timeout(Duration::from_secs(worker_cfg.idle_unload_seconds)) {
                         Ok(j) => j,
                         Err(mpsc::RecvTimeoutError::Timeout) => {
+                            if ACTIVE.load(Ordering::Relaxed) {
+                                continue;
+                            }
                             engine = None;
                             send(Reply::Unloaded);
                             continue;
@@ -209,10 +199,27 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
                         Err(_) => break,
                     }
                 };
+                let job = match job {
+                    Request::Warm => {
+                        if engine.is_none() {
+                            match Worker::spawn() {
+                                Ok(worker) => engine = Some(worker),
+                                Err(e) => eprintln!("VTD worker: {e:#}"),
+                            }
+                        }
+                        continue;
+                    }
+                    Request::Unload => {
+                        engine = None;
+                        send(Reply::Unloaded);
+                        continue;
+                    }
+                    Request::Transcribe(job) => job,
+                };
                 let start = Instant::now();
                 let result = (|| {
                     if engine.is_none() {
-                        engine = Some(Engine::load(&worker_cfg)?);
+                        engine = Some(Worker::spawn()?);
                     }
                     let samples = super::audio::resample(&job.samples, job.rate);
                     if let Some(path) = capture_next.take() {
@@ -233,8 +240,11 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
                         wav.finalize()?;
                         eprintln!("VTD diagnostic saved: {}", path.display());
                     }
-                    engine.as_mut().unwrap().transcribe(&worker_cfg, &samples)
+                    engine.as_mut().unwrap().transcribe(&samples)
                 })();
+                if result.is_err() {
+                    engine = None;
+                }
                 send(Reply::Done(job.focus, result, start.elapsed()));
             }
         });
@@ -245,13 +255,13 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
                 recording: None,
                 finishing: false,
                 hold_recording: false,
-                busy: true,
+                busy: false,
                 tx,
                 rx,
                 last: String::new(),
             })
         });
-        status(hwnd, "VTD: načítání modelu");
+        status(hwnd, "VTD: připraveno");
         let mut msg = std::mem::zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);
@@ -385,6 +395,7 @@ impl App {
         TOGGLE_HELD.store(false, Ordering::Relaxed);
         if paused {
             self.stop(true);
+            let _ = self.tx.send(Request::Unload);
         }
         status(
             self.hwnd,
@@ -429,6 +440,7 @@ impl App {
         let focus = Focus::current();
         match Recording::start(&self.cfg) {
             Ok(recording) => {
+                let _ = self.tx.send(Request::Warm);
                 self.hold_recording = action == 1 && !self.cfg.toggle;
                 self.recording = Some((recording, focus));
                 ACTIVE.store(true, Ordering::Relaxed);
@@ -480,11 +492,11 @@ impl App {
                 status(self.hwnd, "VTD: přepisuji");
                 if self
                     .tx
-                    .send(Job {
+                    .send(Request::Transcribe(Job {
                         samples,
                         rate,
                         focus,
-                    })
+                    }))
                     .is_err()
                 {
                     self.busy = false;
@@ -506,10 +518,6 @@ impl App {
     fn results(&mut self) {
         while let Ok(reply) = self.rx.try_recv() {
             match reply {
-                Reply::Ready => {
-                    self.busy = false;
-                    status(self.hwnd, "VTD: připraveno");
-                }
                 Reply::Unloaded => {
                     if self.recording.is_none() {
                         status(self.hwnd, "VTD: model uspán");

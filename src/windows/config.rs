@@ -16,6 +16,7 @@ pub struct Config {
     pub idle_unload_seconds: u64,
     pub max_recording_seconds: u32,
     pub silence_rms: f32,
+    pub filter_subtitle_credits: bool,
     pub threads: i32,
 }
 
@@ -30,9 +31,10 @@ impl Default for Config {
             toggle_key: 0x78,
             toggle: false,
             clipboard_paste: false,
-            idle_unload_seconds: 300,
+            idle_unload_seconds: 60,
             max_recording_seconds: 120,
             silence_rms: 0.002,
+            filter_subtitle_credits: true,
             threads: 4,
         }
     }

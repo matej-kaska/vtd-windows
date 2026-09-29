@@ -153,16 +153,19 @@ pub fn resample(input: &[f32], rate: u32) -> Vec<f32> {
         .collect()
 }
 
-pub fn audible(samples: &[f32], threshold: f32) -> bool {
-    samples
-        .chunks(320)
-        .filter(|frame| {
-            let rms = (frame.iter().map(|x| x * x).sum::<f32>() / frame.len() as f32).sqrt();
-            rms > threshold
-        })
-        .take(5)
-        .count()
-        == 5
+pub fn speech(samples: &[f32], threshold: f32) -> &[f32] {
+    let (mut first, mut last, mut count) = (samples.len(), 0, 0);
+    for (i, frame) in samples.chunks(320).enumerate() {
+        if frame.iter().map(|x| x * x).sum::<f32>() > threshold * threshold * frame.len() as f32 {
+            first = first.min(i * 320);
+            last = (i + 1) * 320;
+            count += 1;
+        }
+    }
+    if count < 5 {
+        return &samples[..0];
+    }
+    &samples[first.saturating_sub(3200)..(last + 3200).min(samples.len())]
 }
 
 pub fn read_wav(path: &std::path::Path) -> Result<Vec<f32>> {
@@ -195,10 +198,19 @@ mod tests {
     #[test]
     fn silence_and_click_do_not_trigger() {
         let mut x = vec![0.0; 16000];
-        assert!(!audible(&x, 0.002));
+        assert!(speech(&x, 0.002).is_empty());
         x[100] = 1.0;
-        assert!(!audible(&x, 0.002));
-        assert!(audible(&vec![0.1; 16000], 0.002));
+        assert!(speech(&x, 0.002).is_empty());
+        assert_eq!(speech(&vec![0.1; 16000], 0.002).len(), 16000);
+    }
+    #[test]
+    fn trims_only_outer_silence_with_padding() {
+        let mut x = vec![0.0; 48000];
+        x[16000..17600].fill(0.1);
+        x[30400..32000].fill(0.1);
+        assert_eq!(speech(&x, 0.002), &x[12800..35200]);
+        x[12800..16000].fill(0.001);
+        assert_eq!(speech(&x, 0.002), &x[12800..35200]);
     }
     #[test]
     fn resampling_preserves_duration_and_rejects_aliasing() {

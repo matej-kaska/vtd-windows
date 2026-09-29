@@ -16,7 +16,7 @@ Click the mascot tray icon for **⏸ Pozastavit**, **▶ Spustit** or **✕ Ukon
 
 Choose the destination text field before finishing. You can switch away and back while recording. Once you finish, keep focus in that field until the text appears. Changes during transcription block automatic insertion; `vtd copy` recovers the last transcript.
 
-The model stays loaded for five minutes after use, then releases memory. The next dictation reloads it. Recordings are not saved by default.
+The tray starts without loading the model. Recording starts a separate transcription process, so model loading can overlap with speaking. After one minute of inactivity, or when paused, that process exits and releases its memory and GPU resources. If transcription is already running, pausing discards its result and closes the process when it finishes. Recordings are not saved by default.
 
 The package needs a Vulkan-capable GPU driver. No Rust, Python or Vulkan SDK installation is needed to run it. The x64 build targets discrete GPUs and AMD Strix Halo; Strix Halo still needs testing on that hardware.
 
@@ -39,13 +39,16 @@ Edit `vtd.json` beside the executable, then restart VTD.
 | `trigger_key` | `119` | Hold-to-record key, F8 |
 | `toggle_key` | `120` | Start/stop key, F9; must differ from `trigger_key` |
 | `toggle` | `false` | Also make `trigger_key` a start/stop key |
-| `idle_unload_seconds` | `300` | Unload the idle model; `0` keeps it loaded |
+| `idle_unload_seconds` | `60` | Close the idle transcription process; `0` keeps it loaded |
 | `max_recording_seconds` | `120` | Recording limit, up to 300 seconds |
 | `silence_rms` | `0.002` | Silence threshold |
+| `filter_subtitle_credits` | `true` | Remove the known trailing JohnyX subtitle credit; disable to dictate that phrase literally |
 | `threads` | `4` | CPU worker threads |
 | `model` | `models/ggml-large-v3-turbo-q5_0.bin` | Model path, relative to the configuration or absolute |
 
 The model supports multiple languages; `cs` is only the initial configuration. Set a language explicitly for predictable short dictation, or use `auto`.
+
+Quiet audio at the beginning and end is trimmed with 200 ms of padding; pauses within speech remain intact. This is a lightweight energy filter, not a full speech detector. Whisper can still invent text in noise. The optional subtitle filter only removes the known final “Titulky vytvořil JohnyX” credit and spelling variants; it does not remove ordinary closing sentences.
 
 Enable `clipboard_paste` if an editor drops or repeats typed characters. This replaces the clipboard with the latest transcript. Applications running as administrator may reject insertion from VTD running without elevation.
 
@@ -80,3 +83,5 @@ Requires Rust stable, Visual Studio C++ Build Tools with Windows SDK, CMake/Ninj
 The build uses `C:\vtd-build` to avoid Windows path-length limits. Override it with `-BuildDir`. CPU-specific native optimizations are disabled for portability; Vulkan selects the GPU at runtime.
 
 The original Linux source is retained. See [upstream](https://github.com/MQ37/vtd) for Linux instructions. Windows code lives in `src/windows`.
+
+To regenerate the icon, install `svgo@4.1.0` and `@resvg/resvg-js@2.6.2` with `npm install --prefix .tools/icon-tools`, put oxipng on PATH (or set `OXIPNG`), and run `node scripts/build-icon.mjs`. It optimizes the SVG, renders each existing ICO size directly from the vector, applies `oxipng -o max -Z`, and packs the PNGs without re-encoding them. These tools are not required for normal builds.
