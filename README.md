@@ -12,7 +12,7 @@ Extract the package into a writable folder and run `vtd.exe`.
 - **F9:** press to start, press again to finish.
 - **Esc:** cancel.
 
-Click the tray icon to **pause/resume** or **quit**. Pausing stops recording, prevents pending text insertion and lets F8/F9 pass through to other applications. The tooltip shows the current state.
+Click the mascot tray icon for **⏸ Pozastavit**, **▶ Spustit** or **✕ Ukončit**. Pausing stops recording, prevents pending text insertion and lets F8/F9 pass through to other applications. The tooltip shows the current state. The icon is a cropped version of the upstream mascot, embedded in the executable at multiple sizes.
 
 Choose the destination text field before finishing. You can switch away and back while recording. Once you finish, keep focus in that field until the text appears. Changes during transcription block automatic insertion; `vtd copy` recovers the last transcript.
 

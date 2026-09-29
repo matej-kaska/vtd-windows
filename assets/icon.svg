@@ -1,0 +1,47 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="70 38 360 360" width="512" height="512" role="img" aria-labelledby="vtd-title vtd-desc">
+  <title id="vtd-title">vtd mascot</title>
+  <desc id="vtd-desc">A cute chibi demon with small golden horns, big round eyes, a fanged grin, and a spade-tipped tail.</desc>
+  <defs>
+    <clipPath id="mouth">
+      <path d="M200 318 Q256 326 312 318 Q256 392 200 318 Z" />
+    </clipPath>
+    <clipPath id="body">
+      <rect x="176" y="350" width="160" height="130" rx="40" />
+    </clipPath>
+  </defs>
+
+  <g transform="translate(-6 -20)">
+    
+    <path d="M130 198 C106 172 98 120 118 74 C148 106 166 140 178 166 Z" fill="#F7BF4F" />
+    <path d="M382 198 C406 172 414 120 394 74 C364 106 346 140 334 166 Z" fill="#F7BF4F" />
+    
+    <path d="M114 138 C110 118 114 100 120 86" fill="none" stroke="#FFE9A6" stroke-width="6" stroke-linecap="round" />
+    <path d="M398 138 C402 118 398 100 392 86" fill="none" stroke="#FFE9A6" stroke-width="6" stroke-linecap="round" />
+
+    
+    <path d="M256 118 C356 118 426 190 426 268 C426 352 350 400 256 400 C162 400 86 352 86 268 C86 190 156 118 256 118 Z" fill="#F75C43" />
+    <ellipse cx="196" cy="168" rx="58" ry="26" transform="rotate(-20 196 168)" fill="#FFFFFF" opacity="0.2" />
+
+    
+    <ellipse cx="142" cy="304" rx="24" ry="14" fill="#FFB3A4" opacity="0.85" />
+    <ellipse cx="370" cy="304" rx="24" ry="14" fill="#FFB3A4" opacity="0.85" />
+
+    
+    <ellipse cx="204" cy="252" rx="36" ry="42" fill="#FFFFFF" />
+    <ellipse cx="308" cy="252" rx="36" ry="42" fill="#FFFFFF" />
+    <ellipse cx="208" cy="258" rx="21" ry="27" fill="#2B1B33" />
+    <ellipse cx="304" cy="258" rx="21" ry="27" fill="#2B1B33" />
+    <circle cx="197" cy="243" r="9" fill="#FFFFFF" />
+    <circle cx="297" cy="243" r="9" fill="#FFFFFF" />
+    <circle cx="216" cy="272" r="4.5" fill="#FFFFFF" />
+    <circle cx="312" cy="272" r="4.5" fill="#FFFFFF" />
+
+    
+    <path d="M200 318 Q256 326 312 318 Q256 392 200 318 Z" fill="#4B1535" />
+    <g clip-path="url(#mouth)">
+      <ellipse cx="256" cy="362" rx="26" ry="18" fill="#FF6F91" />
+      <path d="M216 312 L226 336 L236 312 Z" fill="#FFFFFF" />
+      <path d="M276 312 L286 336 L296 312 Z" fill="#FFFFFF" />
+    </g>
+  </g>
+</svg>

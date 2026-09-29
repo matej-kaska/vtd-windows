@@ -1,6 +1,7 @@
 use super::runtime::wide;
 use windows_sys::Win32::{
     Foundation::*,
+    System::LibraryLoader::GetModuleHandleW,
     UI::{Shell::*, WindowsAndMessaging::*},
 };
 
@@ -14,7 +15,17 @@ pub fn update(hwnd: HWND, text: &str, operation: u32) -> bool {
         icon.uID = 1;
         icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
         icon.uCallbackMessage = EVENT;
-        icon.hIcon = LoadIconW(std::ptr::null_mut(), IDI_APPLICATION);
+        icon.hIcon = LoadImageW(
+            GetModuleHandleW(std::ptr::null()),
+            std::ptr::without_provenance(1),
+            IMAGE_ICON,
+            GetSystemMetrics(SM_CXSMICON),
+            GetSystemMetrics(SM_CYSMICON),
+            LR_SHARED,
+        ) as HICON;
+        if icon.hIcon.is_null() {
+            return false;
+        }
         for (dest, unit) in icon.szTip.iter_mut().take(127).zip(text.encode_utf16()) {
             *dest = unit;
         }
@@ -32,9 +43,14 @@ pub fn menu(hwnd: HWND, paused: bool) -> u32 {
             menu,
             MF_STRING,
             1,
-            wide(if paused { "Pokračovat" } else { "Pozastavit" }).as_ptr(),
+            wide(if paused {
+                "▶  Spustit"
+            } else {
+                "⏸  Pozastavit"
+            })
+            .as_ptr(),
         );
-        AppendMenuW(menu, MF_STRING, 2, wide("Ukončit").as_ptr());
+        AppendMenuW(menu, MF_STRING, 2, wide("✕  Ukončit").as_ptr());
         let mut point: POINT = std::mem::zeroed();
         GetCursorPos(&mut point);
         SetForegroundWindow(hwnd);
