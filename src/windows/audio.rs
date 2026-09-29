@@ -117,20 +117,34 @@ pub fn resample(input: &[f32], rate: u32) -> Vec<f32> {
     let cutoff = (1.0 / ratio).min(1.0) * 0.94;
     let radius = (16.0 / cutoff).ceil() as i64;
     let count = (input.len() as f64 / ratio) as usize;
+    let (mut a, mut b) = (rate, 16000);
+    while b != 0 {
+        (a, b) = (b, a % b);
+    }
+    let phases = 16000 / a;
+    let weights: Vec<Vec<f64>> = (0..phases)
+        .map(|phase| {
+            (-radius..=radius)
+                .map(|n| {
+                    let d = phase as f64 / phases as f64 - n as f64;
+                    let x = std::f64::consts::PI * d * cutoff;
+                    let sinc = if x.abs() < 1e-8 { 1.0 } else { x.sin() / x };
+                    sinc * 0.5 * (1.0 + (std::f64::consts::PI * d / radius as f64).cos())
+                })
+                .collect()
+        })
+        .collect();
     (0..count)
         .map(|i| {
-            let pos = i as f64 * ratio;
-            let mid = pos.floor() as i64;
+            let pos = i as u64 * rate as u64;
+            let mid = (pos / 16000) as i64;
+            let filter = &weights[((pos % 16000) / a as u64) as usize];
             let (mut value, mut weight) = (0.0, 0.0);
-            for n in mid - radius..=mid + radius {
+            for (j, &w) in filter.iter().enumerate() {
+                let n = mid - radius + j as i64;
                 if n < 0 || n >= input.len() as i64 {
                     continue;
                 }
-                let d = pos - n as f64;
-                let x = std::f64::consts::PI * d * cutoff;
-                let sinc = if x.abs() < 1e-8 { 1.0 } else { x.sin() / x };
-                let window = 0.5 * (1.0 + (std::f64::consts::PI * d / radius as f64).cos());
-                let w = sinc * window;
                 value += input[n as usize] as f64 * w;
                 weight += w;
             }
