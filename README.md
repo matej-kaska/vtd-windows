@@ -1,3 +1,13 @@
+# VTD Windows
+
+A minimal Windows fork of [MQ37/vtd](https://github.com/MQ37/vtd). Hold F8, speak Czech, release to type locally. No GUI, tray icon, cloud, Electron, Python runtime, or always-on microphone.
+
+Rust + whisper.cpp + Vulkan. One x64 build targets AMD discrete GPUs and Strix Halo. Keeps the model warm, releases it after inactivity, and checks focus before typing. The original Linux implementation is preserved below.
+
+**[Windows setup, configuration and build instructions (Czech)](WINDOWS.md)** ? **[Measured results](BENCHMARKS.md)**
+
+---
+
 <p align="center">
   <img src="logo.svg" alt="vtd mascot" width="160">
 </p>

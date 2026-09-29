@@ -1,8 +1,29 @@
-mod config;
-mod daemon;
-mod install;
-mod keyboard;
+#![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(target_os = "linux")]
+mod config;
+#[cfg(target_os = "linux")]
+mod daemon;
+#[cfg(target_os = "linux")]
+mod install;
+#[cfg(target_os = "linux")]
+mod keyboard;
+#[cfg(windows)]
+mod windows;
+
+#[cfg(windows)]
+fn main() {
+    unsafe {
+        use windows_sys::Win32::System::Console::*;
+        if GetStdHandle(STD_OUTPUT_HANDLE).is_null() { AttachConsole(ATTACH_PARENT_PROCESS); }
+    }
+    if let Err(e) = windows::main() {
+        eprintln!("vtd: {e:#}");
+        std::process::exit(1);
+    }
+}
+
+#[cfg(target_os = "linux")]
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
@@ -20,6 +41,7 @@ fn main() {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn parse_model_flag(args: &[String]) -> String {
     let mut i = 0;
     while i < args.len() {
@@ -35,6 +57,7 @@ fn parse_model_flag(args: &[String]) -> String {
     "large-v3-turbo".to_string()
 }
 
+#[cfg(target_os = "linux")]
 fn print_help() {
     println!(
         "vtd - push-to-talk local voice dictation daemon\n\

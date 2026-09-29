@@ -1,2 +1,7 @@
 /target
 *.wav
+/.tools
+/dist
+/models
+/artifacts
+/vtd.json
