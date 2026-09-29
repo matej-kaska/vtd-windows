@@ -23,5 +23,5 @@ fn main() {
             .expect("Windows SDK resource compiler is required")
             .success()
     );
-    println!("cargo:rustc-link-arg={}", resource.display());
+    println!("cargo:rustc-link-arg-bin=vtd={}", resource.display());
 }

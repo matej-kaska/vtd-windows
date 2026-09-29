@@ -1,6 +1,6 @@
-use super::{audio, config::Config};
 use anyhow::{Context, Result, ensure};
 use std::{ffi::CStr, time::Instant};
+use vtd::{audio, config::Config};
 use whisper_rs::{
     FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
 };
@@ -40,6 +40,10 @@ pub struct Engine {
 }
 impl Engine {
     pub fn load(cfg: &Config) -> Result<Self> {
+        ensure!(
+            cfg.language == "auto" || whisper_rs::get_lang_id(&cfg.language).is_some(),
+            "Unknown language"
+        );
         ensure!(
             cfg.model.is_file(),
             "Model missing: {}. Run scripts/download-model.ps1.",
@@ -81,11 +85,7 @@ impl Engine {
 
     pub fn transcribe(&mut self, cfg: &Config, samples: &[f32]) -> Result<String> {
         ensure!(samples.len() <= 16000 * 300, "Recording exceeds 5 minutes");
-        if samples.len() < 4800 {
-            return Ok(String::new());
-        }
-        let samples = audio::speech(samples, cfg.silence_rms);
-        if samples.is_empty() {
+        if samples.len() < 4800 || !audio::audible(samples, cfg.silence_rms) {
             return Ok(String::new());
         }
         let mut text = self.decode(cfg, samples)?;

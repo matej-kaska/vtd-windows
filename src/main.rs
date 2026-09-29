@@ -13,10 +13,7 @@ mod windows;
 
 #[cfg(windows)]
 fn main() {
-    unsafe {
-        use windows_sys::Win32::System::Console::*;
-        if GetStdHandle(STD_OUTPUT_HANDLE).is_null() { AttachConsole(ATTACH_PARENT_PROCESS); }
-    }
+    vtd::attach_console();
     if let Err(e) = windows::main() {
         eprintln!("vtd: {e:#}");
         std::process::exit(1);

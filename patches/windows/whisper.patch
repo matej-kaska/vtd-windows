@@ -1,0 +1,329 @@
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -23,6 +23,8 @@
+ #ifdef _WIN32
+     #define NOMINMAX
+     #include <windows.h>
++    #include <compressapi.h>
++    #pragma comment(lib, "cabinet")
+     #include <direct.h> // For _mkdir on Windows
+ #else
+     #include <unistd.h>
+@@ -312,9 +314,7 @@
+ using compile_count_guard = std::unique_ptr<uint32_t, decltype(&decrement_compile_count)>;
+ 
+ compile_count_guard acquire_compile_slot() {
+-    // wait until fewer than N compiles are in progress.
+-    // 16 is an arbitrary limit, the goal is to avoid "failed to create pipe" errors.
+-    uint32_t N = std::max(1u, std::min(16u, std::thread::hardware_concurrency()));
++    uint32_t N = 1;
+     std::unique_lock<std::mutex> guard(compile_count_mutex);
+     compile_count_cond.wait(guard, [N] { return compile_count < N; });
+     compile_count++;
+@@ -1019,6 +1019,32 @@
+     }
+ }
+ 
++#ifdef _WIN32
++std::string compress_shader(const std::string& data) {
++    COMPRESSOR_HANDLE handle;
++    if (!CreateCompressor(COMPRESS_ALGORITHM_XPRESS_HUFF, nullptr, &handle)) {
++        throw std::runtime_error("Cannot create shader compressor");
++    }
++    std::unique_ptr<std::remove_pointer_t<COMPRESSOR_HANDLE>, decltype(&CloseCompressor)> compressor(handle, CloseCompressor);
++    DWORD level = 1;
++    if (!SetCompressorInformation(handle, COMPRESS_INFORMATION_CLASS_LEVEL, &level, sizeof(level))) {
++        throw std::runtime_error("Cannot set shader compression level");
++    }
++    SIZE_T size = 0;
++    if (Compress(handle, data.data(), data.size(), nullptr, 0, &size) || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
++        throw std::runtime_error("Cannot size compressed shader");
++    }
++    std::string packed(size + sizeof(uint32_t), '\0');
++    if (!Compress(handle, data.data(), data.size(), packed.data() + sizeof(uint32_t), size, &size) || size > UINT32_MAX) {
++        throw std::runtime_error("Cannot compress shader");
++    }
++    uint32_t length = static_cast<uint32_t>(size);
++    memcpy(packed.data(), &length, sizeof(length));
++    packed.resize(size + sizeof(length));
++    return packed;
++}
++#endif
++
+ void write_output_files() {
+     std::stringstream hdr = make_generic_stringstream();
+     std::stringstream src = make_generic_stringstream();
+@@ -1046,6 +1072,9 @@
+             }
+ 
+             src << "const uint64_t " << name << "_len = " << data.size() << ";\n";
++#ifdef _WIN32
++            data = compress_shader(data);
++#endif
+             src << "const unsigned char " << name << "_data[" << data.size() << "] = {\n" << std::hex;
+             auto bytes = reinterpret_cast<const uint8_t*>(data.data());
+             for (size_t i = 0; i < data.size(); ++i) {
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -42,6 +42,8 @@
+ #if defined(_MSC_VER)
+ # define NOMINMAX 1
+ # include <windows.h>
++# include <compressapi.h>
++# pragma comment(lib, "cabinet")
+ # define YIELD() YieldProcessor()
+ #elif defined(__clang__) || defined(__GNUC__)
+ # if defined(__x86_64__) ||defined(__i386__)
+@@ -2009,11 +2011,6 @@
+     ctx->device->device.resetFences({ ctx->fence });
+ }
+ 
+-// variables to track number of compiles in progress
+-static uint32_t compile_count = 0;
+-static std::mutex compile_count_mutex;
+-static std::condition_variable compile_count_cond;
+-
+ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipeline, size_t spv_size, const void* spv_data, const std::string entrypoint,
+                                          uint32_t parameter_count, std::array<uint32_t, 3> wg_denoms, std::vector<uint32_t> specialization_constants,
+                                          bool disable_robustness, bool require_full_subgroups, uint32_t required_subgroup_size) {
+@@ -2024,8 +2021,26 @@
+     GGML_ASSERT(parameter_count <= MAX_PARAMETER_COUNT);
+     GGML_ASSERT(wg_denoms[0] > 0 && wg_denoms[1] > 0 && wg_denoms[2] > 0); // NOLINT
+ 
+-    vk::ShaderModuleCreateInfo shader_module_create_info({}, spv_size, reinterpret_cast<const uint32_t *>(spv_data));
+-    pipeline->shader_module = device->device.createShaderModule(shader_module_create_info);
++    {
++#ifdef _WIN32
++        DECOMPRESSOR_HANDLE handle;
++        if (!CreateDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF, nullptr, &handle)) {
++            throw std::runtime_error("Cannot create shader decompressor");
++        }
++        std::unique_ptr<std::remove_pointer_t<DECOMPRESSOR_HANDLE>, decltype(&CloseDecompressor)> decompressor(handle, CloseDecompressor);
++        uint32_t packed_size;
++        memcpy(&packed_size, spv_data, sizeof(packed_size));
++        std::vector<uint32_t> code(spv_size / sizeof(uint32_t));
++        SIZE_T size = 0;
++        if (!Decompress(handle, static_cast<const char *>(spv_data) + sizeof(packed_size), packed_size,
++                        code.data(), spv_size, &size) || size != spv_size) {
++            throw std::runtime_error("Cannot decompress shader");
++        }
++        spv_data = code.data();
++#endif
++        vk::ShaderModuleCreateInfo shader_module_create_info({}, spv_size, reinterpret_cast<const uint32_t *>(spv_data));
++        pipeline->shader_module = device->device.createShaderModule(shader_module_create_info);
++    }
+ 
+     vk::PushConstantRange pcr(
+         vk::ShaderStageFlagBits::eCompute,
+@@ -2106,6 +2121,8 @@
+         std::cerr << "ggml_vulkan: " << e.what() << std::endl;
+         throw e;
+     }
++    device->device.destroyShaderModule(pipeline->shader_module);
++    pipeline->shader_module = nullptr;
+     pipeline->compiled = true;
+ 
+     if (vk_instance.debug_utils_support) {
+@@ -2132,12 +2149,6 @@
+ 
+     device->all_pipelines.push_back(pipeline);
+ 
+-    {
+-        std::lock_guard<std::mutex> guard(compile_count_mutex);
+-        assert(compile_count > 0);
+-        compile_count--;
+-    }
+-    compile_count_cond.notify_all();
+ }
+ 
+ static void ggml_vk_destroy_pipeline(vk::Device& device, vk_pipeline& pipeline) {
+@@ -3080,7 +3091,6 @@
+         device->pipeline_matmul_id_bf16 = std::make_shared<vk_matmul_pipeline_struct>();
+     }
+ 
+-    std::vector<std::future<void>> compiles;
+     auto const &ggml_vk_create_pipeline = [&](vk_device& device, vk_pipeline& base_pipeline, const char *name, size_t spv_size, const void* spv_data, const char *entrypoint,
+                                               uint32_t parameter_count, uint32_t push_constant_size, std::array<uint32_t, 3> wg_denoms, const std::vector<uint32_t>& specialization_constants,
+                                               uint32_t align, bool disable_robustness = false, bool require_full_subgroups = false, uint32_t required_subgroup_size = 0) {
+@@ -3117,20 +3127,8 @@
+             if (!pipeline->needed || pipeline->compiled) {
+                 continue;
+             }
+-            // TODO: We're no longer benefitting from the async compiles (shaders are
+-            // compiled individually, as needed) and this complexity can be removed.
+-            {
+-                // wait until fewer than N compiles are in progress
+-                uint32_t N = std::max(1u, std::thread::hardware_concurrency());
+-                std::unique_lock<std::mutex> guard(compile_count_mutex);
+-                while (compile_count >= N) {
+-                    compile_count_cond.wait(guard);
+-                }
+-                compile_count++;
+-            }
+-
+-            compiles.push_back(std::async(ggml_vk_create_pipeline_func, std::ref(device), std::ref(pipeline), spv_size, spv_data, entrypoint,
+-                                          parameter_count, wg_denoms, specialization_constants, disable_robustness, require_full_subgroups, required_subgroup_size));
++            ggml_vk_create_pipeline_func(device, pipeline, spv_size, spv_data, entrypoint,
++                                         parameter_count, wg_denoms, specialization_constants, disable_robustness, require_full_subgroups, required_subgroup_size);
+         }
+     };
+ 
+@@ -4454,9 +4452,6 @@
+         }
+     }
+ 
+-    for (auto &c : compiles) {
+-        c.wait();
+-    }
+ }
+ 
+ static bool ggml_vk_khr_cooperative_matrix_support(const vk::PhysicalDeviceProperties& props, const vk::PhysicalDeviceDriverProperties& driver_props, vk_device_architecture arch);
+--- a/src/whisper.cpp
++++ b/src/whisper.cpp
+@@ -432,8 +432,31 @@
+ 
+     int n_vocab = 51864;
+ 
+-    std::map<token, id> token_to_id;
+-    std::map<id, token> id_to_token;
++    std::vector<id> token_to_id;
++    std::vector<token> id_to_token;
++    std::vector<id> non_speech_ids;
++    void init_non_speech();
++
++    void init_tokens() {
++        token_to_id.reserve(id_to_token.size());
++        for (id i = 0; i < (id) id_to_token.size(); ++i) {
++            token_to_id.push_back(i);
++        }
++        std::sort(token_to_id.begin(), token_to_id.end(), [&](id a, id b) {
++            const int order = id_to_token[a].compare(id_to_token[b]);
++            return order < 0 || (order == 0 && a > b);
++        });
++        token_to_id.erase(std::unique(token_to_id.begin(), token_to_id.end(), [&](id a, id b) {
++            return id_to_token[a] == id_to_token[b];
++        }), token_to_id.end());
++    }
++
++    id find_token(const token & text) const {
++        const auto it = std::lower_bound(token_to_id.begin(), token_to_id.end(), text,
++            [&](id i, const token & value) { return id_to_token[i] < value; });
++        return it != token_to_id.end() && id_to_token[*it] == text ? *it : -1;
++    }
++
+ 
+     // reference: https://github.com/openai/whisper/blob/248b6cb124225dd263bb9bd32d060b6517e067f8/whisper/tokenizer.py#L334-L349
+     id token_eot        = 50256;
+@@ -1600,6 +1623,7 @@
+         std::vector<char> tmp;
+ 
+         tmp.reserve(128);
++        vocab.id_to_token.resize(std::max(n_vocab, model.hparams.n_vocab));
+ 
+         for (int i = 0; i < n_vocab; i++) {
+             uint32_t len;
+@@ -1615,7 +1639,6 @@
+                 word = "";
+             }
+ 
+-            vocab.token_to_id[word] = i;
+             vocab.id_to_token[i] = word;
+ 
+             //printf("%s: vocab[%d] = '%s'\n", __func__, i, word.c_str());
+@@ -1666,11 +1689,12 @@
+                 } else {
+                     word = "[_extra_token_" + std::to_string(i) + "]";
+                 }
+-                vocab.token_to_id[word] = i;
+                 vocab.id_to_token[i] = word;
+             }
+         }
+ 
++        vocab.init_tokens();
++        vocab.init_non_speech();
+         WHISPER_LOG_INFO("%s: n_langs       = %d\n", __func__, vocab.num_languages());
+     }
+ 
+@@ -3300,9 +3324,9 @@
+             bool found = false;
+             while (j > i) {
+                 auto sub = word.substr(i, j-i);
+-                auto it = vocab.token_to_id.find(sub);
+-                if (it != vocab.token_to_id.end()) {
+-                    tokens.push_back(it->second);
++                const auto id = vocab.find_token(sub);
++                if (id >= 0) {
++                    tokens.push_back(id);
+                     i = j;
+                     found = true;
+                     break;
+@@ -6099,6 +6123,21 @@
+     "♪♪♪","♩", "♪", "♫", "♬", "♭", "♮", "♯"
+ };
+ 
++void whisper_vocab::init_non_speech() {
++    auto add = [&](const std::string & token) {
++        const auto id = find_token(token);
++        if (id >= 0) {
++            non_speech_ids.push_back(id);
++        }
++    };
++    for (const auto & token : non_speech_tokens) {
++        add(token);
++        add(" " + token);
++    }
++    add(" -");
++    add(" '");
++}
++
+ static void whisper_compute_logprobs(
+                 const std::vector<float> & logits,
+                               const int    n_logits,
+@@ -6181,7 +6220,9 @@
+         if (params.suppress_blank) {
+             if (is_initial) {
+                 logits[vocab.token_eot]           = -INFINITY;
+-                logits[vocab.token_to_id.at(" ")] = -INFINITY;
++                const auto space = vocab.find_token(" ");
++                if (space < 0) { throw std::out_of_range("Missing space token"); }
++                logits[space] = -INFINITY;
+             }
+         }
+ 
+@@ -6224,9 +6265,9 @@
+         // ref: https://github.com/openai/whisper/discussions/1041
+         if (params.suppress_regex != nullptr) {
+             std::regex re(params.suppress_regex);
+-            for (std::pair<whisper_vocab::token, whisper_vocab::id> token_id : vocab.token_to_id) {
+-                if (std::regex_match(token_id.first, re)) {
+-                    logits[token_id.second] = -INFINITY;
++            for (const auto id : vocab.token_to_id) {
++                if (std::regex_match(vocab.id_to_token[id], re)) {
++                    logits[id] = -INFINITY;
+                 }
+             }
+         }
+@@ -6234,21 +6275,8 @@
+         // suppress non-speech tokens
+         // ref: https://github.com/openai/whisper/blob/7858aa9c08d98f75575035ecd6481f462d66ca27/whisper/tokenizer.py#L224-L253
+         if (params.suppress_nst) {
+-            for (const std::string & token : non_speech_tokens) {
+-                const std::string suppress_tokens[] = {token, " " + token};
+-                for (const std::string & suppress_token : suppress_tokens) {
+-                    if (vocab.token_to_id.find(suppress_token) != vocab.token_to_id.end()) {
+-                        logits[vocab.token_to_id.at(suppress_token)] = -INFINITY;
+-                    }
+-                }
+-            }
+-
+-            // allow hyphens "-" and single quotes "'" between words, but not at the beginning of a word
+-            if (vocab.token_to_id.find(" -") != vocab.token_to_id.end()) {
+-                logits[vocab.token_to_id.at(" -")] = -INFINITY;
+-            }
+-            if (vocab.token_to_id.find(" '") != vocab.token_to_id.end()) {
+-                logits[vocab.token_to_id.at(" '")] = -INFINITY;
++            for (const auto id : vocab.non_speech_ids) {
++                logits[id] = -INFINITY;
+             }
+         }
+ 

@@ -19,7 +19,21 @@ $env:CMAKE_GENERATOR = 'Ninja'
 $env:CARGO_TARGET_DIR = $BuildDir
 if (Test-Path "$root\.tools\libclang\clang\native\libclang.dll") { $env:LIBCLANG_PATH = "$root\.tools\libclang\clang\native" }
 Remove-Item Env:\WHISPER_DONT_GENERATE_BINDINGS -ErrorAction SilentlyContinue
-$env:CMAKE_BUILD_PARALLEL_LEVEL = '8'
+$env:CMAKE_BUILD_PARALLEL_LEVEL = '2'
+$env:CARGO_BUILD_JOBS = '2'
 $env:GGML_NATIVE = 'OFF'
-if ($Test) { cargo test --release --locked } else { cargo build --release --locked }
+$env:CMAKE_PROJECT_INCLUDE = "$root\scripts\whisper-windows.cmake".Replace('\', '/')
+$nativeHash = ((Get-FileHash "$root\patches\windows\whisper.patch", "$root\scripts\whisper-windows.cmake" -Algorithm SHA256).Hash) -join ''
+$nativeStamp = Join-Path $BuildDir 'vtd-native.sha256'
+if (-not (Test-Path $nativeStamp) -or (Get-Content $nativeStamp -Raw) -ne $nativeHash) {
+    cargo clean --release -p whisper-rs-sys
+    if ($LASTEXITCODE -ne 0) { throw 'Cannot refresh native build' }
+    New-Item -ItemType Directory -Force $BuildDir | Out-Null
+    [IO.File]::WriteAllText($nativeStamp, $nativeHash)
+}
+if ($Test) { cargo test --release --locked --features engine } else {
+    cargo rustc --release --locked --features engine --bin vtd-engine -- -C lto=fat -C codegen-units=1 -C panic=abort -C link-arg=/DELAYLOAD:Cabinet.dll -C link-arg=/DELAYLOAD:vulkan-1.dll -C link-arg=delayimp.lib
+    if ($LASTEXITCODE -ne 0) { throw 'Engine build failed' }
+    cargo rustc --release --locked --bin vtd -- -C opt-level=s -C lto=fat -C codegen-units=1 -C panic=abort
+}
 if ($LASTEXITCODE -ne 0) { throw 'Cargo build/test failed' }

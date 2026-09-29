@@ -1,4 +1,4 @@
-use super::{audio::Recording, config::Config, tray, worker::Worker};
+use super::{tray, worker::Worker};
 use anyhow::{Result, bail, ensure};
 use std::{
     cell::RefCell,
@@ -9,6 +9,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use vtd::{config::Config, recording::Recording};
 use windows_sys::Win32::{
     Foundation::*,
     System::{DataExchange::*, LibraryLoader::*, Memory::*, Threading::*},
@@ -77,10 +78,17 @@ struct App {
     recording: Option<(Recording, Focus)>,
     finishing: bool,
     hold_recording: bool,
-    busy: bool,
+    busy: usize,
     tx: mpsc::Sender<Request>,
     rx: mpsc::Receiver<Reply>,
     last: String,
+    mouse: HHOOK,
+}
+
+impl Drop for App {
+    fn drop(&mut self) {
+        self.release_target();
+    }
 }
 
 pub(super) fn wide(s: &str) -> Vec<u16> {
@@ -167,8 +175,6 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
         TOGGLE.store(cfg.toggle_key, Ordering::Relaxed);
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), instance, 0);
         ensure!(!hook.is_null(), "Cannot register keyboard hook");
-        let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse), instance, 0);
-        ensure!(!mouse.is_null(), "Cannot register mouse hook");
         let (tx, jobs) = mpsc::channel::<Request>();
         let (replies, rx) = mpsc::channel();
         let worker_cfg = cfg.clone();
@@ -221,7 +227,7 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
                     if engine.is_none() {
                         engine = Some(Worker::spawn()?);
                     }
-                    let samples = super::audio::resample(&job.samples, job.rate);
+                    let samples = vtd::audio::resample(job.samples, job.rate);
                     if let Some(path) = capture_next.take() {
                         let spec = hound::WavSpec {
                             channels: 1,
@@ -240,7 +246,7 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
                         wav.finalize()?;
                         eprintln!("VTD diagnostic saved: {}", path.display());
                     }
-                    engine.as_mut().unwrap().transcribe(&samples)
+                    engine.as_mut().unwrap().transcribe(samples)
                 })();
                 if result.is_err() {
                     engine = None;
@@ -255,10 +261,11 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
                 recording: None,
                 finishing: false,
                 hold_recording: false,
-                busy: false,
+                busy: 0,
                 tx,
                 rx,
                 last: String::new(),
+                mouse: null_mut(),
             })
         });
         status(hwnd, "VTD: připraveno");
@@ -268,7 +275,6 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
             DispatchMessageW(&msg);
         }
         UnhookWindowsHookEx(hook);
-        UnhookWindowsHookEx(mouse);
         tray::update(hwnd, "", NIM_DELETE);
         APP.with(|a| *a.borrow_mut() = None);
         CloseHandle(mutex);
@@ -389,6 +395,25 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
 }
 
 impl App {
+    fn track_target(&mut self) -> Result<Focus> {
+        if self.mouse.is_null() {
+            self.mouse = unsafe {
+                SetWindowsHookExW(WH_MOUSE_LL, Some(mouse), GetModuleHandleW(null_mut()), 0)
+            };
+            ensure!(!self.mouse.is_null(), "Cannot track target field");
+        }
+        Ok(Focus::current())
+    }
+
+    fn release_target(&mut self) {
+        if !self.mouse.is_null() {
+            unsafe {
+                UnhookWindowsHookEx(self.mouse);
+            }
+            self.mouse = null_mut();
+        }
+    }
+
     fn pause(&mut self, paused: bool) {
         PAUSED.store(paused, Ordering::Relaxed);
         HELD.store(false, Ordering::Relaxed);
@@ -401,7 +426,7 @@ impl App {
             self.hwnd,
             if paused {
                 "VTD: pozastaveno"
-            } else if self.busy {
+            } else if self.busy > 0 {
                 "VTD: zpracovávám"
             } else {
                 "VTD: připraveno"
@@ -417,9 +442,6 @@ impl App {
             self.stop(true);
             return;
         }
-        if self.busy {
-            return;
-        }
         if action == 0 {
             if self.hold_recording {
                 self.finish();
@@ -432,15 +454,24 @@ impl App {
                     KillTimer(self.hwnd, 2);
                 }
                 self.finishing = false;
+                if self.busy == 0 {
+                    self.release_target();
+                }
             } else if action == 3 || self.cfg.toggle {
                 self.finish();
             }
             return;
         }
+        if self.busy >= 2 {
+            status(self.hwnd, "VTD: dokončuji předchozí přepisy");
+            return;
+        }
         let focus = Focus::current();
         match Recording::start(&self.cfg) {
             Ok(recording) => {
-                let _ = self.tx.send(Request::Warm);
+                if self.busy == 0 {
+                    let _ = self.tx.send(Request::Warm);
+                }
                 self.hold_recording = action == 1 && !self.cfg.toggle;
                 self.recording = Some((recording, focus));
                 ACTIVE.store(true, Ordering::Relaxed);
@@ -455,7 +486,14 @@ impl App {
 
     fn finish(&mut self) {
         if self.recording.is_some() && !self.finishing {
-            self.recording.as_mut().unwrap().1 = Focus::current();
+            match self.track_target() {
+                Ok(focus) => self.recording.as_mut().unwrap().1 = focus,
+                Err(e) => {
+                    self.stop(true);
+                    status(self.hwnd, &e.to_string());
+                    return;
+                }
+            }
             self.finishing = true;
             unsafe {
                 if SetTimer(self.hwnd, 2, 250, None) == 0 {
@@ -468,12 +506,23 @@ impl App {
     fn stop(&mut self, cancel: bool) {
         if cancel {
             EPOCH.fetch_add(1, Ordering::Relaxed);
+            self.release_target();
         }
         let Some((recording, mut focus)) = self.recording.take() else {
             return;
         };
         if !self.finishing && !cancel {
-            focus = Focus::current();
+            match self.track_target() {
+                Ok(target) => focus = target,
+                Err(e) => {
+                    ACTIVE.store(self.busy > 0, Ordering::Relaxed);
+                    unsafe {
+                        KillTimer(self.hwnd, 1);
+                    }
+                    status(self.hwnd, &e.to_string());
+                    return;
+                }
+            }
         }
         unsafe {
             KillTimer(self.hwnd, 1);
@@ -481,14 +530,14 @@ impl App {
         }
         self.finishing = false;
         if cancel {
-            ACTIVE.store(false, Ordering::Relaxed);
+            ACTIVE.store(self.busy > 0, Ordering::Relaxed);
             drop(recording);
             status(self.hwnd, "VTD: připraveno");
             return;
         }
         match recording.finish() {
             Ok((samples, rate)) if samples.len() >= rate as usize * 3 / 10 => {
-                self.busy = true;
+                self.busy += 1;
                 status(self.hwnd, "VTD: přepisuji");
                 if self
                     .tx
@@ -499,17 +548,26 @@ impl App {
                     }))
                     .is_err()
                 {
-                    self.busy = false;
-                    ACTIVE.store(false, Ordering::Relaxed);
+                    self.busy -= 1;
+                    if self.busy == 0 {
+                        self.release_target();
+                    }
+                    ACTIVE.store(self.busy > 0, Ordering::Relaxed);
                     status(self.hwnd, "Přepisovací vlákno skončilo. Restartujte VTD.");
                 }
             }
             Ok(_) => {
-                ACTIVE.store(false, Ordering::Relaxed);
+                if self.busy == 0 {
+                    self.release_target();
+                }
+                ACTIVE.store(self.busy > 0, Ordering::Relaxed);
                 status(self.hwnd, "VTD: příliš krátký záznam");
             }
             Err(e) => {
-                ACTIVE.store(false, Ordering::Relaxed);
+                if self.busy == 0 {
+                    self.release_target();
+                }
+                ACTIVE.store(self.busy > 0, Ordering::Relaxed);
                 status(self.hwnd, &e.to_string());
             }
         }
@@ -519,13 +577,16 @@ impl App {
         while let Ok(reply) = self.rx.try_recv() {
             match reply {
                 Reply::Unloaded => {
-                    if self.recording.is_none() {
+                    if self.recording.is_none() && self.busy == 0 {
                         status(self.hwnd, "VTD: model uspán");
                     }
                 }
                 Reply::Done(focus, result, elapsed) => {
-                    self.busy = false;
-                    ACTIVE.store(false, Ordering::Relaxed);
+                    self.busy -= 1;
+                    if self.busy == 0 && !self.finishing {
+                        self.release_target();
+                    }
+                    ACTIVE.store(self.recording.is_some() || self.busy > 0, Ordering::Relaxed);
                     match result {
                         Ok(text) if text.is_empty() => status(self.hwnd, "VTD: bez řeči"),
                         Ok(text) => {
@@ -548,6 +609,11 @@ impl App {
                             eprintln!("VTD error: {e:#}");
                             status(self.hwnd, &format!("{e:#}"));
                         }
+                    }
+                    if self.recording.is_some() {
+                        status(self.hwnd, "VTD: nahrávám · Esc zruší");
+                    } else if self.busy > 0 {
+                        status(self.hwnd, "VTD: přepisuji");
                     }
                 }
             }
@@ -678,4 +744,40 @@ pub fn autostart(mode: Option<&str>) -> Result<()> {
         "Cannot update autostart"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn completing_one_transcription_keeps_the_next_active() {
+        let (tx, _jobs) = mpsc::channel();
+        let (replies, rx) = mpsc::channel();
+        let mut app = App {
+            cfg: Config::default(),
+            hwnd: null_mut(),
+            recording: None,
+            finishing: false,
+            hold_recording: false,
+            busy: 2,
+            tx,
+            rx,
+            last: String::new(),
+            mouse: null_mut(),
+        };
+        let focus = Focus {
+            window: 0,
+            control: 0,
+            epoch: 0,
+        };
+        for remaining in [1, 0] {
+            replies
+                .send(Reply::Done(focus, Ok(String::new()), Duration::ZERO))
+                .unwrap();
+            app.results();
+            assert_eq!(app.busy, remaining);
+            assert_eq!(ACTIVE.load(Ordering::Relaxed), remaining > 0);
+        }
+    }
 }
