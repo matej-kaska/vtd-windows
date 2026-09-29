@@ -10,6 +10,7 @@ pub struct Config {
     pub gpu: Option<usize>,
     pub language: String,
     pub trigger_key: u32,
+    pub toggle_key: u32,
     pub toggle: bool,
     pub clipboard_paste: bool,
     pub idle_unload_seconds: u64,
@@ -26,6 +27,7 @@ impl Default for Config {
             gpu: None,
             language: "cs".into(),
             trigger_key: 0x77,
+            toggle_key: 0x78,
             toggle: false,
             clipboard_paste: false,
             idle_unload_seconds: 300,
@@ -63,6 +65,10 @@ impl Config {
         ensure!(
             (0x70..=0x87).contains(&self.trigger_key),
             "trigger_key must be F1-F24 (112-135); default F8=119"
+        );
+        ensure!(
+            (0x70..=0x87).contains(&self.toggle_key) && self.toggle_key != self.trigger_key,
+            "toggle_key must be F1-F24 and differ from trigger_key; default F9=120"
         );
         ensure!(
             (1..=300).contains(&self.max_recording_seconds),

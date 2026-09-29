@@ -1,6 +1,6 @@
 # VTD Windows
 
-A minimal Windows fork of [MQ37/vtd](https://github.com/MQ37/vtd). Hold F8, speak Czech, release to type locally. No GUI, tray icon, cloud, Electron, Python runtime, or always-on microphone.
+A minimal Windows fork of [MQ37/vtd](https://github.com/MQ37/vtd). Hold F8 or tap F9 to start/stop Czech dictation locally. No GUI, tray icon, cloud, Electron, Python runtime, or always-on microphone.
 
 Rust + whisper.cpp + Vulkan. One x64 build targets AMD discrete GPUs and Strix Halo. Keeps the model warm, releases it after inactivity, and checks focus before typing. The original Linux implementation is preserved below.
 
@@ -15,7 +15,7 @@ Rust + whisper.cpp + Vulkan. One x64 build targets AMD discrete GPUs and Strix H
 # vtd
 
 A tiny, no-UI, push-to-talk voice dictation daemon for Linux. Hold a key, talk,
-release — your speech is transcribed locally (via [whisper.cpp](https://github.com/ggml-org/whisper.cpp))
+release â€” your speech is transcribed locally (via [whisper.cpp](https://github.com/ggml-org/whisper.cpp))
 and typed directly into whatever text field is focused, anywhere on your desktop.
 
 No Electron app, no tray icon, no cloud API calls. Just a background process
@@ -26,7 +26,7 @@ that watches one key and a keyboard-injection call.
 This project was built and is actively used on an **AMD Ryzen AI Max ("Strix
 Halo") APU with Radeon 8060S graphics (gfx1151)**, transcribing with
 whisper.cpp's `large-v3-turbo` model fully offloaded to the integrated GPU via
-ROCm/HIP — under a second per utterance, no CPU fallback needed. If you're
+ROCm/HIP â€” under a second per utterance, no CPU fallback needed. If you're
 looking for a dictation tool that actually uses your Strix Halo GPU instead of
 falling back to CPU, this repo includes the exact ROCm compatibility patch and
 build script that got HIP acceleration working (see
@@ -40,7 +40,7 @@ It should also work on any other AMD GPU ROCm supports, or CPU-only anywhere
 Unlike tools built on `wtype` (which relies on the Wayland virtual-keyboard
 protocol and simply doesn't work on compositors that don't implement it, like
 mutter), `vtd` injects keystrokes through the kernel's `/dev/uinput` via
-`ydotool` — compositor-agnostic by construction. It's actively developed and
+`ydotool` â€” compositor-agnostic by construction. It's actively developed and
 tested on **Ubuntu with GNOME on Wayland**, where `wtype`-based tools fail
 outright, and the same approach should work unmodified on KDE, sway, or X11.
 
@@ -48,7 +48,7 @@ outright, and the same approach should work unmodified on KDE, sway, or X11.
 
 Tools like [Handy](https://github.com/cjpais/handy) are great, but on GNOME/
 Wayland their input-injection layer (`wtype`, which relies on the Wayland
-virtual-keyboard protocol) simply doesn't work — mutter doesn't implement that
+virtual-keyboard protocol) simply doesn't work â€” mutter doesn't implement that
 protocol. `vtd` instead injects keystrokes through the kernel's `/dev/uinput`
 via [`ydotool`](https://github.com/ReimuNotMoe/ydotool), which bypasses the
 compositor entirely and works the same way on GNOME, KDE, sway, or anything
@@ -76,7 +76,7 @@ No audio or text ever leaves your machine.
 
 ## Requirements
 
-- Linux with `/dev/uinput` access (works on GNOME, KDE, sway, X11, Wayland —
+- Linux with `/dev/uinput` access (works on GNOME, KDE, sway, X11, Wayland â€”
   anything, since injection is kernel-level, not compositor-level)
 - [`ydotool`](https://github.com/ReimuNotMoe/ydotool) installed
 - PipeWire (`pw-record`) for audio capture
@@ -98,7 +98,7 @@ cargo build --release
 ./target/release/vtd install --model large-v3-turbo
 ```
 
-That's it — hold Right Alt, speak, release, and the transcription gets typed
+That's it â€” hold Right Alt, speak, release, and the transcription gets typed
 wherever your cursor is focused.
 
 Check on it any time with:
@@ -150,7 +150,7 @@ at `vtd install` time if set beforehand:
 
 Keyboard device autodetection walks `/proc/bus/input/devices` looking for a
 device with a `kbd` event handler, preferring one with "keyboard" in its
-name. It isn't foolproof on every laptop/keyboard combination — if `vtd`
+name. It isn't foolproof on every laptop/keyboard combination â€” if `vtd`
 picks the wrong device (or your Right Alt doesn't fire, e.g. no physical key
 present), override `VTD_KEYBOARD_DEVICE` / `VTD_TRIGGER_KEY` directly. You can
 find your keyboard's event number and a candidate trigger key's code by
@@ -163,7 +163,7 @@ candidate `/dev/input/eventN`.
 with more than one HIP/ROCm installation (e.g. a distro-packaged `hip-dev` in
 `/usr/include` alongside a newer install elsewhere), the compiler's HIP
 driver mode adds your real ROCm include path via low-priority `-idirafter`,
-while `/usr/include` is always searched first — so a stale `hip_version.h`
+while `/usr/include` is always searched first â€” so a stale `hip_version.h`
 wins and whisper.cpp's HIP compatibility shims pick the wrong preprocessor
 branch, breaking the build with errors about `hipblasDatatype_t` or
 `hipStreamWaitEvent`. `scripts/build-whisper.sh` works around this with an

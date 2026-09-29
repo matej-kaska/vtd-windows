@@ -21,6 +21,8 @@ const RESULT: u32 = WM_APP + 3;
 static WINDOW: AtomicUsize = AtomicUsize::new(0);
 static TRIGGER: AtomicU32 = AtomicU32::new(119);
 static HELD: AtomicBool = AtomicBool::new(false);
+static TOGGLE: AtomicU32 = AtomicU32::new(120);
+static TOGGLE_HELD: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static EPOCH: AtomicUsize = AtomicUsize::new(0);
 thread_local! { static APP: RefCell<Option<App>> = const { RefCell::new(None) }; }
@@ -63,6 +65,7 @@ struct App {
     hwnd: HWND,
     recording: Option<(Recording, Focus)>,
     finishing: bool,
+    hold_recording: bool,
     busy: bool,
     tx: mpsc::Sender<Job>,
     rx: mpsc::Receiver<Reply>,
@@ -129,6 +132,7 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
         ensure!(!hwnd.is_null(), "Cannot create message window");
         WINDOW.store(hwnd as usize, Ordering::Relaxed);
         TRIGGER.store(cfg.trigger_key, Ordering::Relaxed);
+        TOGGLE.store(cfg.toggle_key, Ordering::Relaxed);
         let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), instance, 0);
         ensure!(!hook.is_null(), "Cannot register keyboard hook");
         let mouse = SetWindowsHookExW(WH_MOUSE_LL, Some(mouse), instance, 0);
@@ -212,6 +216,7 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
                 hwnd,
                 recording: None,
                 finishing: false,
+                hold_recording: false,
                 busy: true,
                 tx,
                 rx,
@@ -239,6 +244,15 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
             {
                 let down = w as u32 == WM_KEYDOWN || w as u32 == WM_SYSKEYDOWN;
                 let up = w as u32 == WM_KEYUP || w as u32 == WM_SYSKEYUP;
+                if event.vkCode == TOGGLE.load(Ordering::Relaxed) {
+                    if down && !TOGGLE_HELD.swap(true, Ordering::Relaxed) {
+                        PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, KEY, 3, 0);
+                    }
+                    if up {
+                        TOGGLE_HELD.store(false, Ordering::Relaxed);
+                    }
+                    return 1;
+                }
                 if event.vkCode == TRIGGER.load(Ordering::Relaxed) {
                     if down && !HELD.swap(true, Ordering::Relaxed) {
                         PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, KEY, 1, 0);
@@ -317,7 +331,7 @@ impl App {
             return;
         }
         if action == 0 {
-            if !self.cfg.toggle {
+            if self.hold_recording {
                 self.finish();
             }
             return;
@@ -328,7 +342,7 @@ impl App {
                     KillTimer(self.hwnd, 2);
                 }
                 self.finishing = false;
-            } else if self.cfg.toggle {
+            } else if action == 3 || self.cfg.toggle {
                 self.finish();
             }
             return;
@@ -336,6 +350,7 @@ impl App {
         let focus = Focus::current();
         match Recording::start(&self.cfg) {
             Ok(recording) => {
+                self.hold_recording = action == 1 && !self.cfg.toggle;
                 self.recording = Some((recording, focus));
                 ACTIVE.store(true, Ordering::Relaxed);
                 unsafe {

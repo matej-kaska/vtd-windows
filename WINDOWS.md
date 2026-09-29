@@ -7,6 +7,7 @@ Offline české diktování přes Vulkan. Windows alternativa projektu [MQ37/vtd
 Rozbal celý balíček do zapisovatelné složky. Spusť `vtd.exe` a počkej na načtení modelu. Program běží na pozadí bez oken, ikony a notifikací.
 
 - Podrž **F8**, mluv, pusť. Text se vloží do původního pole.
+- Nebo stiskni **F9** pro začátek a znovu **F9** pro dokončení. Klávesu nemusíš držet.
 - Mikrofon po puštění dobíhá 250 ms kvůli koncům slov. Přepis používá beam search s pěti kandidáty.
 - **Esc** zruší záznam nebo zabrání vložení rozpracovaného přepisu.
 - `vtd status` vypíše stav, `vtd stop` program ukončí, `vtd copy` zkopíruje poslední přepis do schránky.
@@ -29,6 +30,7 @@ Po stažení není potřeba připojení. AMD ovladač musí obsahovat Vulkan. Py
 | --- | --- | --- |
 | `language` | `cs` | Jazyk přepisu |
 | `trigger_key` | `119` | F8; povolené F1–F24: 112–135 |
+| `toggle_key` | `120` | F9; začátek/konec jedním stiskem, musí se lišit od `trigger_key` |
 | `toggle` | `false` | `true`: jednou stisknout pro začátek, podruhé pro konec |
 | `clipboard_paste` | `false` | `true`: vložit celý přepis přes schránku a Ctrl+V; přepis nahradí obsah schránky |
 | `microphone` | `null` | Výchozí mikrofon; jinak přesný název z `vtd devices` |
