@@ -2,6 +2,7 @@ use super::config::Config;
 use anyhow::{Context, Result, bail, ensure};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 pub fn devices() -> Result<Vec<String>> {
     cpal::default_host()
@@ -18,6 +19,7 @@ pub struct Recording {
     stream: cpal::Stream,
     data: Arc<Mutex<Buffer>>,
     rate: u32,
+    started: Instant,
 }
 
 impl Recording {
@@ -34,6 +36,10 @@ impl Recording {
         let config: cpal::StreamConfig = supported.clone().into();
         let rate = config.sample_rate;
         let channels = config.channels as usize;
+        eprintln!(
+            "VTD microphone: {}, {rate} Hz, {channels} channels",
+            device.description()?.name()
+        );
         let limit = rate as usize * cfg.max_recording_seconds as usize;
         let data = Arc::new(Mutex::new(Buffer {
             samples: Vec::with_capacity(limit),
@@ -71,7 +77,12 @@ impl Recording {
             other => bail!("Unsupported microphone format: {other}"),
         };
         stream.play()?;
-        Ok(Self { stream, data, rate })
+        Ok(Self {
+            stream,
+            data,
+            rate,
+            started: Instant::now(),
+        })
     }
 
     pub fn finish(self) -> Result<(Vec<f32>, u32)> {
@@ -83,6 +94,14 @@ impl Recording {
         if let Some(err) = &buf.error {
             bail!("Microphone: {err}");
         }
+        let seconds = buf.samples.len() as f64 / self.rate as f64;
+        let rms = (buf.samples.iter().map(|x| (*x as f64).powi(2)).sum::<f64>()
+            / buf.samples.len().max(1) as f64)
+            .sqrt();
+        eprintln!(
+            "VTD capture: {seconds:.2}s audio, {:.2}s elapsed, RMS {rms:.4}",
+            self.started.elapsed().as_secs_f64()
+        );
         Ok((std::mem::take(&mut buf.samples), self.rate))
     }
 }

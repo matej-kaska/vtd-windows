@@ -88,7 +88,10 @@ impl Engine {
     }
 
     fn decode(&mut self, cfg: &Config, samples: &[f32]) -> Result<String> {
-        let mut params = FullParams::new(SamplingStrategy::Greedy { best_of: 1 });
+        let mut params = FullParams::new(SamplingStrategy::BeamSearch {
+            beam_size: 5,
+            patience: -1.0,
+        });
         params.set_n_threads(cfg.threads);
         params.set_language(Some(&cfg.language));
         params.set_translate(false);

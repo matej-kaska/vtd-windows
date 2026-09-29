@@ -7,6 +7,7 @@ Offline české diktování přes Vulkan. Windows alternativa projektu [MQ37/vtd
 Rozbal celý balíček do zapisovatelné složky. Spusť `vtd.exe` a počkej na načtení modelu. Program běží na pozadí bez oken, ikony a notifikací.
 
 - Podrž **F8**, mluv, pusť. Text se vloží do původního pole.
+- Mikrofon po puštění dobíhá 250 ms kvůli koncům slov. Přepis používá beam search s pěti kandidáty.
 - **Esc** zruší záznam nebo zabrání vložení rozpracovaného přepisu.
 - `vtd status` vypíše stav, `vtd stop` program ukončí, `vtd copy` zkopíruje poslední přepis do schránky.
 - Přepis zůstává v paměti do dalšího výsledku nebo ukončení. Zvuk se neukládá.
@@ -60,6 +61,6 @@ Potřeba: Rust stable s MSVC targetem, Visual Studio C++ Build Tools a Windows S
 
 Krátká výchozí cesta `C:\vtd-build` obchází limit délky cest nástrojů Windows; lze změnit `-BuildDir`. `GGML_NATIVE=OFF` brání optimalizaci pouze pro CPU buildovacího počítače. Vulkan vybírá zařízení za běhu. Jeden x64 balíček je určen pro RX 7800 XT i Strix Halo; druhý stroj vyžaduje vlastní ověření.
 
-`vtd transcribe nahravka.wav 5` změří opakované přepisy s jednou načteným modelem. Diagnostika jde na stderr, text na stdout. Běžné diktování text neloguje.
+`vtd transcribe nahravka.wav 5` změří opakované přepisy s jednou načteným modelem. Diagnostika jde na stderr, text na stdout. Běžné diktování text neloguje; diagnostika obsahuje název mikrofonu, délku zachyceného zvuku, dobu záznamu a RMS hlasitost.
 
 Původní linuxový program a jeho instalační skripty jsou zachovány. Nová část je v `src/windows`.

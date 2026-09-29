@@ -62,6 +62,7 @@ struct App {
     cfg: Config,
     hwnd: HWND,
     recording: Option<(Recording, Focus)>,
+    finishing: bool,
     busy: bool,
     tx: mpsc::Sender<Job>,
     rx: mpsc::Receiver<Reply>,
@@ -192,6 +193,7 @@ pub fn run(cfg: Config) -> Result<()> {
                 cfg,
                 hwnd,
                 recording: None,
+                finishing: false,
                 busy: true,
                 tx,
                 rx,
@@ -263,9 +265,9 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                     if let Some(app) = a.borrow_mut().as_mut() {
                         if msg == RESULT {
                             app.results();
-                        } else if msg == WM_TIMER {
+                        } else if msg == WM_TIMER && (w == 1 || app.finishing) {
                             app.stop(false);
-                        } else {
+                        } else if msg == KEY {
                             app.key(w);
                         }
                     }
@@ -298,13 +300,18 @@ impl App {
         }
         if action == 0 {
             if !self.cfg.toggle {
-                self.stop(false);
+                self.finish();
             }
             return;
         }
         if self.recording.is_some() {
-            if self.cfg.toggle {
-                self.stop(false);
+            if self.finishing {
+                unsafe {
+                    KillTimer(self.hwnd, 2);
+                }
+                self.finishing = false;
+            } else if self.cfg.toggle {
+                self.finish();
             }
             return;
         }
@@ -322,6 +329,17 @@ impl App {
         }
     }
 
+    fn finish(&mut self) {
+        if self.recording.is_some() && !self.finishing {
+            self.finishing = true;
+            unsafe {
+                if SetTimer(self.hwnd, 2, 250, None) == 0 {
+                    self.stop(false);
+                }
+            }
+        }
+    }
+
     fn stop(&mut self, cancel: bool) {
         if cancel {
             EPOCH.fetch_add(1, Ordering::Relaxed);
@@ -331,7 +349,9 @@ impl App {
         };
         unsafe {
             KillTimer(self.hwnd, 1);
+            KillTimer(self.hwnd, 2);
         }
+        self.finishing = false;
         if cancel {
             ACTIVE.store(false, Ordering::Relaxed);
             drop(recording);
@@ -389,7 +409,7 @@ impl App {
                             if let Err(e) = insert(&self.last, focus) {
                                 status(
                                     self.hwnd,
-                                    &format!("{e}. Přepis je dostupný přes nabídku VTD."),
+                                    &format!("{e}. Přepis je dostupný přes vtd copy."),
                                 );
                             } else {
                                 status(
