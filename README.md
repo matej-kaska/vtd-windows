@@ -79,10 +79,14 @@ Open **Settings...** from the tray when recording and transcription have finishe
 
 | Setting | What you can change |
 | --- | --- |
-| Keyboard shortcuts | Choose a separate **F1-F24** key for holding to record, toggling recording and inserting the last transcript. |
+| Keyboard shortcuts | Click each shortcut field and press a key, optionally with **Ctrl, Shift or Alt**. Function and media keys are supported. |
 | Speech language | Choose a language explicitly, or use automatic detection. |
 | Start when I sign in to Windows | Enable or disable autostart for your account. |
 | Mute playback while recording | Temporarily mute the default playback device while you speak. |
+
+The native shortcut fields reserve **Space, Tab, Enter and Esc**; choose another key in these fields.
+
+**On a laptop, press the top-row key without Fn in the shortcut field.** If Windows receives a media key instead of F9, VTD saves that media key; its normal action is intercepted while VTD shortcuts are enabled. Firmware-only keys that send no keyboard event cannot be captured; use Fn Lock or another key in that case.
 
 **Save** applies these changes immediately. **Cancel** discards them. Dictation shortcuts are paused while settings are open. The settings process exits when closed, releasing its UI memory.
 
@@ -146,7 +150,7 @@ For microphone selection, GPU choice, memory timeout and other options, edit **`
 | `gpu` | `null` | Prefer a discrete GPU, otherwise the first available GPU; set an index from `vtd devices` to choose explicitly. |
 | `trigger_key` | `119` | F8: hold to record. |
 | `toggle_key` | `120` | F9: start/stop recording. |
-| `replay_key` | `121` | F10: insert the last transcript. All three keys must be distinct; F1-F24 map to 112-135. |
+| `replay_key` | `121` | F10: insert the last transcript. All three shortcuts must be distinct. Keys use Windows virtual-key codes; add 256 for Shift, 512 for Ctrl and 1024 for Alt (Ctrl+Shift+F9 = 888). |
 | `toggle` | `false` | Make `trigger_key` toggle recording too, instead of requiring a hold. |
 | `clipboard_paste` | `true` | Fast paste with clipboard restoration. `false` uses slower Unicode typing for automatic insertion; F10 still uses fast paste. |
 | `mute_output` | `false` | Mute playback only during recording. |

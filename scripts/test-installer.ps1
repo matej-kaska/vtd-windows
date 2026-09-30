@@ -65,6 +65,9 @@ try {
     & "$PSScriptRoot\build-installer.ps1" @buildArgs | Out-File (Join-Path $testRoot 'build.log')
     Copy-Item -LiteralPath (Join-Path $bundle 'VTD-Setup.exe') -Destination $setup
     $target = Join-Path $testRoot 'installed with spaces'
+    foreach ($invalid in @('0','27','91','160','229','231','4096')) {
+        Install-Case "invalid-shortcut-$invalid" $target @{HoldKey=$invalid;ModelSource='default'} $false 'Choose a key, optionally with Ctrl, Shift or Alt.'
+    }
     Install-Case 'duplicate-shortcuts' $target @{HoldKey='120';ToggleKey='120';ModelSource='default'} $false 'Each action must use a different key.'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $target 'vtd.exe'))) 'Invalid preferences installed application files'
 
@@ -89,6 +92,12 @@ try {
     Assert-True ((Get-ChildItem -LiteralPath $target -Filter *.ps1).Count -eq 0) 'Installed runtime contains PowerShell scripts'
     $requestsPath = Join-Path $httpRoot 'requests.log'
     $modelRequests = @(Select-String -Path $requestsPath -SimpleMatch 'GET /model.bin').Count
+    Install-Case 'custom-shortcuts' $target @{HoldKey='800';ToggleKey='173';ReplayKey='544';ModelSource='default'}
+    $customKeys = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-True ($customKeys.trigger_key -eq 800 -and $customKeys.toggle_key -eq 173 -and $customKeys.replay_key -eq 544) 'Custom shortcuts were not saved'
+    Install-Case 'custom-shortcuts-upgrade' $target @{}
+    $customKeys = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+    Assert-True ($customKeys.trigger_key -eq 800 -and $customKeys.toggle_key -eq 173 -and $customKeys.replay_key -eq 544) 'Upgrade changed custom shortcuts'
     Install-Case 'reuse-verified-default-model' $target @{ModelSource='default'}
     Assert-True (@(Select-String -Path $requestsPath -SimpleMatch 'GET /model.bin').Count -eq $modelRequests) 'Matching default model was downloaded again'
 

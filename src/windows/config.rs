@@ -51,6 +51,12 @@ pub fn path() -> Result<PathBuf> {
         .join("vtd.json"))
 }
 
+pub fn valid_shortcut(key: u32) -> bool {
+    key & !0x7ff == 0
+        && (0x20..=0xfe).contains(&(key & 0xff))
+        && !matches!(key & 0xff, 0x5b | 0x5c | 0xa0..=0xa5 | 0xe5 | 0xe7)
+}
+
 impl Config {
     pub fn load(path: &Path) -> Result<Self> {
         let mut cfg: Self = if path.exists() {
@@ -68,18 +74,12 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
-        ensure!(
-            (0x70..=0x87).contains(&self.trigger_key),
-            "trigger_key must be F1-F24 (112-135); default F8=119"
-        );
-        ensure!(
-            (0x70..=0x87).contains(&self.toggle_key),
-            "toggle_key must be F1-F24; default F9=120"
-        );
-        ensure!(
-            (0x70..=0x87).contains(&self.replay_key),
-            "replay_key must be F1-F24; default F10=121"
-        );
+        for key in [self.trigger_key, self.toggle_key, self.replay_key] {
+            ensure!(
+                valid_shortcut(key),
+                "Choose a key, optionally with Ctrl, Shift or Alt."
+            );
+        }
         ensure!(
             self.trigger_key != self.toggle_key
                 && self.trigger_key != self.replay_key
@@ -123,7 +123,7 @@ impl Config {
         object.insert("replay_key".into(), self.replay_key.into());
         object.insert("language".into(), self.language.clone().into());
         object.insert("mute_output".into(), self.mute_output.into());
-        serde_json::from_value::<Self>(value.clone())?.validate()?;
+        Self::deserialize(&value)?.validate()?;
         // Preserve unrelated preferences and the original relative model path.
         let temp = path.with_extension("json.tmp");
         std::fs::write(&temp, serde_json::to_vec_pretty(&value)?)?;
@@ -153,6 +153,24 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_shortcuts_validate_and_round_trip() {
+        let cfg = Config {
+            trigger_key: 0x320,
+            toggle_key: 0xad,
+            replay_key: 0x220,
+            ..Config::default()
+        };
+        cfg.validate().unwrap();
+        let saved: Config = serde_json::from_str(&serde_json::to_string(&cfg).unwrap()).unwrap();
+        assert_eq!(saved.trigger_key, 0x320);
+        assert_eq!(saved.toggle_key, 0xad);
+        assert_eq!(saved.replay_key, 0x220);
+        for key in [0, 27, 0x5b, 0xa0, 0xa5, 0xe5, 0xe7, 0xff, 0x1000, 0x10078] {
+            assert!(!valid_shortcut(key), "{key:#x}");
+        }
+    }
 
     #[test]
     fn shortcuts_are_distinct_and_replay_can_move_off_f10() {

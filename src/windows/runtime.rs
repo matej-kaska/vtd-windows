@@ -39,6 +39,7 @@ static TOGGLE: AtomicU32 = AtomicU32::new(120);
 static REPLAY: AtomicU32 = AtomicU32::new(121);
 static TOGGLE_HELD: AtomicBool = AtomicBool::new(false);
 static REPLAY_HELD: AtomicBool = AtomicBool::new(false);
+static REPLAY_PENDING: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static PAUSED: AtomicBool = AtomicBool::new(false);
 static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
@@ -466,14 +467,63 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
     Ok(())
 }
 
+#[inline(never)]
+unsafe fn modifiers_held(released: u32) -> bool {
+    [
+        VK_LSHIFT,
+        VK_RSHIFT,
+        VK_LCONTROL,
+        VK_RCONTROL,
+        VK_LMENU,
+        VK_RMENU,
+        VK_LWIN,
+        VK_RWIN,
+    ]
+    .iter()
+    .any(|&key| key as u32 != released && unsafe { GetAsyncKeyState(key as i32) } < 0)
+}
+
+unsafe fn replay_when_released(released: u32) {
+    unsafe {
+        if !modifiers_held(released) && REPLAY_PENDING.swap(false, Ordering::Relaxed) {
+            EPOCH.fetch_add(1, Ordering::Relaxed);
+            PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, KEY, 4, 0);
+        }
+    }
+}
+
+#[inline(never)]
+unsafe fn shortcut_modifiers() -> u32 {
+    let mut modifiers = 0;
+    for (key, flag) in [
+        (VK_SHIFT, 0x100),
+        (VK_CONTROL, 0x200),
+        (VK_MENU, 0x400),
+        (VK_LWIN, 0x1000),
+        (VK_RWIN, 0x1000),
+    ] {
+        if unsafe { GetAsyncKeyState(key as i32) } < 0 {
+            modifiers |= flag;
+        }
+    }
+    modifiers
+}
+
+fn shortcut_matches(shortcut: u32, key: u32, modifiers: u32, held: bool, up: bool) -> bool {
+    shortcut & 0xff == key && (held || (!up && shortcut & 0x700 == modifiers))
+}
+
 unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     unsafe {
         if code == HC_ACTION as i32 && !PAUSED.load(Ordering::Relaxed) {
             let event = &*(l as *const KBDLLHOOKSTRUCT);
+            if event.flags & LLKHF_INJECTED != 0 {
+                return CallNextHookEx(null_mut(), code, w, l);
+            }
             if SETTINGS_OPEN.load(Ordering::Acquire) {
-                if event.vkCode == TRIGGER.load(Ordering::Relaxed)
-                    || event.vkCode == TOGGLE.load(Ordering::Relaxed)
-                    || event.vkCode == REPLAY.load(Ordering::Relaxed)
+                if event.vkCode == (TRIGGER.load(Ordering::Relaxed) & 0xff)
+                    || event.vkCode == (TOGGLE.load(Ordering::Relaxed) & 0xff)
+                    || event.vkCode == (REPLAY.load(Ordering::Relaxed) & 0xff)
                 {
                     PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, UI_CHECK, 0, 0);
                 }
@@ -482,31 +532,52 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
             {
                 let down = w as u32 == WM_KEYDOWN || w as u32 == WM_SYSKEYDOWN;
                 let up = w as u32 == WM_KEYUP || w as u32 == WM_SYSKEYUP;
-                if event.vkCode == REPLAY.load(Ordering::Relaxed) {
-                    if down {
-                        REPLAY_HELD.store(true, Ordering::Relaxed);
-                    }
-                    if up && REPLAY_HELD.swap(false, Ordering::Relaxed) {
-                        EPOCH.fetch_add(1, Ordering::Relaxed);
-                        PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, KEY, 4, 0);
-                    }
-                    return 1;
+                if up && REPLAY_PENDING.load(Ordering::Relaxed) {
+                    replay_when_released(event.vkCode);
                 }
-                if event.vkCode == TOGGLE.load(Ordering::Relaxed) {
-                    if down && !TOGGLE_HELD.swap(true, Ordering::Relaxed) {
-                        PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, KEY, 3, 0);
+                let bindings = [
+                    (REPLAY.load(Ordering::Relaxed), &REPLAY_HELD, 4),
+                    (TOGGLE.load(Ordering::Relaxed), &TOGGLE_HELD, 3),
+                    (TRIGGER.load(Ordering::Relaxed), &HELD, 1),
+                ];
+                let already_held = bindings.iter().any(|(key, held, _)| {
+                    key & 0xff == event.vkCode && held.load(Ordering::Relaxed)
+                });
+                let modifiers = if already_held {
+                    0x10000
+                } else if down
+                    && bindings
+                        .iter()
+                        .any(|(key, _, _)| key & 0xff == event.vkCode)
+                {
+                    shortcut_modifiers()
+                } else {
+                    0
+                };
+                for (key, held, action) in bindings {
+                    if !shortcut_matches(
+                        key,
+                        event.vkCode,
+                        modifiers,
+                        held.load(Ordering::Relaxed),
+                        up,
+                    ) {
+                        continue;
                     }
-                    if up {
-                        TOGGLE_HELD.store(false, Ordering::Relaxed);
+                    if down && !held.swap(true, Ordering::Relaxed) && action != 4 {
+                        PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, KEY, action, 0);
                     }
-                    return 1;
-                }
-                if event.vkCode == TRIGGER.load(Ordering::Relaxed) {
-                    if down && !HELD.swap(true, Ordering::Relaxed) {
-                        PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, KEY, 1, 0);
-                    }
-                    if up && HELD.swap(false, Ordering::Relaxed) {
-                        PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, KEY, 0, 0);
+                    if up && held.swap(false, Ordering::Relaxed) {
+                        match action {
+                            1 => {
+                                PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, KEY, 0, 0);
+                            }
+                            4 => {
+                                REPLAY_PENDING.store(true, Ordering::Relaxed);
+                                replay_when_released(event.vkCode);
+                            }
+                            _ => {}
+                        }
                     }
                     return 1;
                 }
@@ -909,8 +980,7 @@ impl App {
                                 status(
                                     self.hwnd,
                                     &format!(
-                                        "{e}. Click the target field and press F{}.",
-                                        self.cfg.replay_key - 0x6f
+                                        "{e}. Click the target field and use the insert-last-transcript shortcut."
                                     ),
                                 );
                             } else {
@@ -943,12 +1013,7 @@ fn insert(text: &str, target: Focus, hwnd: HWND, clipboard: bool) -> Result<()> 
         "The target window or field changed"
     );
     unsafe {
-        for key in [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN] {
-            ensure!(
-                GetAsyncKeyState(key as i32) >= 0,
-                "A modifier key is held down"
-            );
-        }
+        ensure!(!modifiers_held(0), "A modifier key is held down");
         let input = |key, unit, flags| INPUT {
             r#type: INPUT_KEYBOARD,
             Anonymous: INPUT_0 {
@@ -1052,6 +1117,7 @@ fn reset_held_keys() {
     HELD.store(false, Ordering::Relaxed);
     TOGGLE_HELD.store(false, Ordering::Relaxed);
     REPLAY_HELD.store(false, Ordering::Relaxed);
+    REPLAY_PENDING.store(false, Ordering::Relaxed);
 }
 
 fn configuration() -> Result<()> {
@@ -1071,6 +1137,20 @@ fn configuration() -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shortcuts_match_exact_modifiers_and_release_after_modifier_changes() {
+        assert!(shortcut_matches(120, 120, 0, false, false));
+        assert!(!shortcut_matches(120, 120, 0x100, false, false));
+        assert!(shortcut_matches(0x320, 0x20, 0x300, false, false));
+        assert!(!shortcut_matches(0x320, 0x20, 0x200, false, false));
+        assert!(!shortcut_matches(0x320, 0x20, 0x1300, false, false));
+        assert!(shortcut_matches(0x320, 0x20, 0, true, true));
+        assert!(!shortcut_matches(0x320, 0x20, 0, false, true));
+        assert!(!shortcut_matches(0x220, 0x20, 0x10000, false, false));
+        assert!(shortcut_matches(0x320, 0x20, 0x10000, true, false));
+        assert!(shortcut_matches(0xad, 0xad, 0, false, false));
+    }
 
     #[test]
     fn exited_settings_process_does_not_leave_shortcuts_paused() {

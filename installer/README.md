@@ -4,7 +4,7 @@
 `%LOCALAPPDATA%\Programs\VTD` by default. The UI uses English ASCII text; speech
 language defaults to the Windows display language on first installation.
 
-The pages expose all preferences from VTD Settings: three distinct F1-F24 keys,
+The pages expose all preferences from VTD Settings: three distinct shortcuts captured by pressing a key (optionally with Ctrl, Shift or Alt),
 speech language, playback muting and startup at sign-in. The model page offers:
 
 - The current default, Whisper large-v3-turbo Q5 (574,041,195 bytes), with a pinned SHA-256.
@@ -115,7 +115,7 @@ Launch=0
 ModelSource=default
 ```
 
-Keys are Windows virtual-key codes: F1=112 through F24=135. Booleans are 0/1.
+Keys are Windows virtual-key codes: F1=112 through F24=135; add 256 for Shift, 512 for Ctrl and 1024 for Alt. For example, Ctrl+Shift+F9=888 and Volume Mute=173. Booleans are 0/1.
 Omitted fields preserve upgrade preferences or use first-install defaults.
 For a custom download, set `ModelSource=url`, `ModelUrl=https://...` and optionally
 `ModelHash=<64 hex characters>`. For an existing file, set `ModelSource=file` and
@@ -154,3 +154,5 @@ the final `SHA256SUMS.txt`. The pipeline already marks these integration points.
 Tool references: [NSIS](https://nsis.sourceforge.io/Docs/),
 [INetC](https://nsis.sourceforge.io/Inetc_plug-in),
 [nsJSON](https://nsis.sourceforge.io/NsJSON_plug-in).
+
+Shortcut fields use the native Windows hot-key control. Space, Tab, Enter and Esc are reserved by that control; function keys, media keys and Ctrl/Shift/Alt combinations with other keys can be captured.

@@ -297,54 +297,65 @@ config_invalid:
 FunctionEnd
 
 !macro KeyCombo LABEL TOP CONTROL KEY
-  ${NSD_CreateLabel} 0 ${TOP}u 62% 12u "${LABEL}"
+  ${NSD_CreateLabel} 0 ${TOP}u 54% 12u "${LABEL}"
   Pop $0
-  ${NSD_CreateDropList} 65% ${TOP}u 35% 100u ""
+  ${NSD_CreateHotKey} 56% ${TOP}u 44% 14u ""
   Pop ${CONTROL}
-  StrCpy $0 1
-  ${Do}
-    ${NSD_CB_AddString} ${CONTROL} "F$0"
-    IntOp $0 $0 + 1
-  ${LoopUntil} $0 > 24
-  IntOp $0 ${KEY} - 112
-  SendMessage ${CONTROL} ${CB_SETCURSEL} $0 0
+  ${NSD_HK_SetRules} ${CONTROL} 0 0
+  ${NSD_HK_SetHotKey} ${CONTROL} ${KEY}
 !macroend
 
 Function PreferencesPage
+  ${NSD_InitCommonControlsEx} 0x0040
   nsDialogs::Create 1018
   Pop $Page
-  !insertmacro KeyCombo "Hold to record:" 2 $HoldControl $HoldKey
-  !insertmacro KeyCombo "Start / stop recording:" 21 $ToggleControl $ToggleKey
-  !insertmacro KeyCombo "Insert last transcript:" 40 $ReplayControl $ReplayKey
-  ${NSD_CreateLabel} 0 61u 40% 12u "Speech language:"
+  !insertmacro KeyCombo "Hold to record:" 0 $HoldControl $HoldKey
+  !insertmacro KeyCombo "Start / stop recording:" 17 $ToggleControl $ToggleKey
+  !insertmacro KeyCombo "Insert last transcript:" 34 $ReplayControl $ReplayKey
+  ${NSD_CreateLabel} 0 54u 40% 12u "Speech language:"
   Pop $0
-  ${NSD_CreateDropList} 42% 59u 58% 100u ""
+  ${NSD_CreateDropList} 42% 52u 58% 100u ""
   Pop $LanguageControl
   !insertmacro LanguageItems $LanguageControl
   Call LanguageName
   ${NSD_CB_SelectString} $LanguageControl $LangName
-  ${NSD_CreateCheckbox} 0 79u 100% 12u "Mute playback while recording"
+  ${NSD_CreateCheckbox} 0 67u 100% 12u "Mute playback while recording"
   Pop $MuteControl
   ${NSD_SetState} $MuteControl $Mute
-  ${NSD_CreateCheckbox} 0 94u 100% 12u "Start when I sign in to Windows"
+  ${NSD_CreateCheckbox} 0 80u 100% 12u "Start when I sign in to Windows"
   Pop $AutostartControl
   ${NSD_SetState} $AutostartControl $Autostart
-  ${NSD_CreateCheckbox} 0 109u 100% 12u "Start VTD after installation"
+  ${NSD_CreateCheckbox} 0 93u 100% 12u "Start VTD after installation"
   Pop $LaunchControl
   ${NSD_SetState} $LaunchControl $Launch
+  ${NSD_CreateLabel} 0 108u 100% 24u "Click a field, then press your key without Fn. You can also use Ctrl, Shift or Alt."
+  Pop $0
   nsDialogs::Show
 FunctionEnd
 
+!macro ValidateKey KEY
+  IntOp $0 ${KEY} & 255
+  IntOp $1 ${KEY} & 0xFFFFF800
+  ${If} $1 != 0
+  ${OrIf} $0 < 32
+  ${OrIf} $0 > 254
+  ${OrIf} $0 == 91
+  ${OrIf} $0 == 92
+  ${OrIf} $0 == 229
+  ${OrIf} $0 == 231
+    StrCpy $ErrorText "Choose a key, optionally with Ctrl, Shift or Alt."
+  ${EndIf}
+  ${If} $0 >= 160
+  ${AndIf} $0 <= 165
+    StrCpy $ErrorText "Choose a key, optionally with Ctrl, Shift or Alt."
+  ${EndIf}
+!macroend
+
 Function ValidatePreferences
   StrCpy $ErrorText ""
-  ${If} $HoldKey < 112
-  ${OrIf} $HoldKey > 135
-  ${OrIf} $ToggleKey < 112
-  ${OrIf} $ToggleKey > 135
-  ${OrIf} $ReplayKey < 112
-  ${OrIf} $ReplayKey > 135
-    StrCpy $ErrorText "Choose shortcuts from F1 to F24."
-  ${EndIf}
+  !insertmacro ValidateKey $HoldKey
+  !insertmacro ValidateKey $ToggleKey
+  !insertmacro ValidateKey $ReplayKey
   ${If} $HoldKey == $ToggleKey
   ${OrIf} $HoldKey == $ReplayKey
   ${OrIf} $ToggleKey == $ReplayKey
@@ -371,12 +382,12 @@ Function ValidatePreferences
 FunctionEnd
 
 Function PreferencesLeave
-  SendMessage $HoldControl ${CB_GETCURSEL} 0 0 $HoldKey
-  SendMessage $ToggleControl ${CB_GETCURSEL} 0 0 $ToggleKey
-  SendMessage $ReplayControl ${CB_GETCURSEL} 0 0 $ReplayKey
-  IntOp $HoldKey $HoldKey + 112
-  IntOp $ToggleKey $ToggleKey + 112
-  IntOp $ReplayKey $ReplayKey + 112
+  ${NSD_HK_GetHotKey} $HoldControl $HoldKey
+  ${NSD_HK_GetHotKey} $ToggleControl $ToggleKey
+  ${NSD_HK_GetHotKey} $ReplayControl $ReplayKey
+  IntOp $HoldKey $HoldKey & 2047
+  IntOp $ToggleKey $ToggleKey & 2047
+  IntOp $ReplayKey $ReplayKey & 2047
   ${NSD_GetText} $LanguageControl $LangName
   Call LanguageCode
   ${NSD_GetState} $MuteControl $Mute

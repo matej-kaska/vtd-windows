@@ -34,6 +34,6 @@ if (-not (Test-Path $nativeStamp) -or (Get-Content $nativeStamp -Raw) -ne $nativ
 if ($Test) { cargo test --release --locked --features engine } else {
     cargo rustc --release --locked --features engine --bin vtd-engine -- -C lto=fat -C codegen-units=1 -C panic=abort -C link-arg=/DELAYLOAD:Cabinet.dll -C link-arg=/DELAYLOAD:vulkan-1.dll -C link-arg=delayimp.lib
     if ($LASTEXITCODE -ne 0) { throw 'Engine build failed' }
-    cargo rustc --release --locked --bin vtd -- -C opt-level=s -C lto=fat -C codegen-units=1 -C panic=abort -C link-arg=/DELAYLOAD:ole32.dll -C link-arg=/DELAYLOAD:oleaut32.dll -C link-arg=/DELAYLOAD:combase.dll -C link-arg=delayimp.lib
+    cargo rustc --release --locked --bin vtd -- -C opt-level=s -C lto=fat -C codegen-units=1 -C panic=abort -C link-arg=/DELAYLOAD:comctl32.dll -C link-arg=/DELAYLOAD:ole32.dll -C link-arg=/DELAYLOAD:oleaut32.dll -C link-arg=/DELAYLOAD:combase.dll -C link-arg=delayimp.lib
 }
 if ($LASTEXITCODE -ne 0) { throw 'Cargo build/test failed' }

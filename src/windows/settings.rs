@@ -6,7 +6,10 @@ use windows_sys::Win32::{
     Foundation::*,
     System::{LibraryLoader::GetModuleHandleW, Threading::GetCurrentProcessId},
     UI::{
-        Controls::{CheckDlgButton, IsDlgButtonChecked},
+        Controls::{
+            CheckDlgButton, HKM_GETHOTKEY, HKM_SETHOTKEY, HKM_SETRULES, ICC_HOTKEY_CLASS,
+            INITCOMMONCONTROLSEX, InitCommonControlsEx, IsDlgButtonChecked,
+        },
         WindowsAndMessaging::*,
     },
 };
@@ -110,6 +113,13 @@ fn show(cfg: &Config) -> Result<()> {
             SetForegroundWindow(existing);
             return Ok(());
         }
+        ensure!(
+            InitCommonControlsEx(&INITCOMMONCONTROLSEX {
+                dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+                dwICC: ICC_HOTKEY_CLASS,
+            }) != 0,
+            "Cannot initialize shortcut fields."
+        );
         let startup = autostart::enabled(&autostart::snapshot()?)?;
         // cfg is borrowed only synchronously during WM_INITDIALOG.
         let hwnd = CreateDialogParamW(
@@ -182,9 +192,7 @@ fn save(hwnd: HWND) -> Result<()> {
             (TOGGLE, &mut cfg.toggle_key),
             (REPLAY, &mut cfg.replay_key),
         ] {
-            let selected = SendDlgItemMessageW(hwnd, id, CB_GETCURSEL, 0, 0);
-            ensure!((0..24).contains(&selected), "Select a key from F1 to F24.");
-            *key = selected as u32 + 0x70;
+            *key = SendDlgItemMessageW(hwnd, id, HKM_GETHOTKEY, 0, 0) as u32 & 0x7ff;
         }
         let selected = SendDlgItemMessageW(hwnd, LANGUAGE, CB_GETCURSEL, 0, 0);
         ensure!(selected >= 0, "Select a speech language.");
@@ -219,16 +227,8 @@ unsafe extern "system" fn dialog_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                     (TOGGLE, cfg.toggle_key),
                     (REPLAY, cfg.replay_key),
                 ] {
-                    for number in 1..=24 {
-                        SendDlgItemMessageW(
-                            hwnd,
-                            id,
-                            CB_ADDSTRING,
-                            0,
-                            runtime::wide(&format!("F{number}")).as_ptr() as LPARAM,
-                        );
-                    }
-                    SendDlgItemMessageW(hwnd, id, CB_SETCURSEL, (key - 0x70) as usize, 0);
+                    SendDlgItemMessageW(hwnd, id, HKM_SETRULES, 0, 0);
+                    SendDlgItemMessageW(hwnd, id, HKM_SETHOTKEY, key as usize, 0);
                 }
                 let mut selected = LANGUAGES.len();
                 for (index, &(code, name)) in LANGUAGES.iter().enumerate() {
@@ -290,6 +290,51 @@ unsafe extern "system" fn dialog_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM
                 0
             }
             _ => 0,
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_shortcut_control_captures_function_and_media_keys() {
+        unsafe {
+            assert_ne!(
+                InitCommonControlsEx(&INITCOMMONCONTROLSEX {
+                    dwSize: std::mem::size_of::<INITCOMMONCONTROLSEX>() as u32,
+                    dwICC: ICC_HOTKEY_CLASS,
+                }),
+                0
+            );
+            let hwnd = CreateWindowExW(
+                0,
+                windows_sys::w!("msctls_hotkey32"),
+                null_mut(),
+                0,
+                0,
+                0,
+                180,
+                24,
+                null_mut(),
+                null_mut(),
+                GetModuleHandleW(null_mut()),
+                null_mut(),
+            );
+            assert!(!hwnd.is_null());
+            SendMessageW(hwnd, HKM_SETRULES, 0, 0);
+            for key in [120, 0xad, 0xae, 0xb3] {
+                SendMessageW(hwnd, WM_KEYDOWN, key, 0);
+                assert_eq!(
+                    SendMessageW(hwnd, HKM_GETHOTKEY, 0, 0) & 0x7ff,
+                    key as isize
+                );
+                SendMessageW(hwnd, WM_KEYUP, key, 0);
+            }
+            SendMessageW(hwnd, HKM_SETHOTKEY, 0x378, 0);
+            assert_eq!(SendMessageW(hwnd, HKM_GETHOTKEY, 0, 0), 0x378);
+            DestroyWindow(hwnd);
         }
     }
 }
