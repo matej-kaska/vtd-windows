@@ -1,12 +1,18 @@
-# VTD Windows
+<p align="center">
+  <a href="https://github.com/MQ37/vtd">
+    <img src="https://raw.githubusercontent.com/MQ37/vtd/master/logo.svg" width="160" height="160" alt="VTD mascot: a little red demon with golden horns and a spade-tipped tail">
+  </a>
+</p>
 
-**Offline voice dictation. GPU accelerated. Exceptionally light when idle.**
+<h1 align="center">VTD Windows</h1>
+
+<p align="center"><strong>Offline voice dictation. GPU accelerated. Exceptionally light when idle.</strong></p>
 
 Speak into a text field using a keyboard shortcut. VTD turns your speech into text locally with Whisper large-v3-turbo, then inserts the result. It lives in the Windows system tray, with a small native settings window when you need it.
 
-**Around 1 MiB of private RAM for the idle tray · About 6.9 MB for the app ZIP · Automatic model unloading**
+**Around 1 MiB of private RAM for the idle tray · 120 KB installer · Automatic model unloading**
 
-[Download](https://github.com/matej-kaska/vtd-windows/releases) · [Get started](#get-started) · [Settings](#settings) · [Resource-usage measurements](#resource-usage)
+[**Install for Windows — VTD-Setup.exe**](https://github.com/matej-kaska/vtd-windows/releases/latest/download/VTD-Setup.exe) · [Installation guide](#get-started) · [Portable ZIP](https://github.com/matej-kaska/vtd-windows/releases/latest/download/vtd-windows-x64.zip) · [Settings](#settings) · [Resource-usage measurements](#resource-usage)
 
 - **Local and multilingual.** Audio stays on your computer. Czech, English and other Whisper languages are supported, including automatic language detection.
 - **Two ways to record.** Hold a key, or press once to start and again to finish. The microphone is active only during recording.
@@ -16,22 +22,23 @@ Speak into a text field using a keyboard shortcut. VTD turns your speech into te
 
 ## Get started
 
-You need **64-bit Windows and a GPU with a working Vulkan driver**. Rust, Python, CUDA and the Vulkan SDK are not required to run the package.
+You need **Windows 10 or 11 (64-bit) and a GPU with a working Vulkan driver**. Rust, Python, CUDA and the Vulkan SDK are not required to run the package.
 
-1. Download **`VTD-Setup.exe`** from [Releases](https://github.com/matej-kaska/vtd-windows/releases).
-2. Choose your shortcuts, speech language, playback muting and startup preference.
+1. Download and open [**`VTD-Setup.exe`**](https://github.com/matej-kaska/vtd-windows/releases/latest/download/VTD-Setup.exe).
+2. Choose an installation folder, your shortcuts, speech language, playback muting and startup preference.
 3. Download the recommended model, enter a custom HTTPS model link, or select an existing `.bin` model.
+4. Finish installation, start VTD and use your toggle key (**F9** by default) to record your first dictation.
 
-The native installer is about **120 KB**. It installs for your Windows account without administrator rights, PowerShell commands or a separate installer runtime. It downloads the matching application package and verifies its SHA-256 before installing. VTD appears in Start and in Windows Installed apps.
+The native installer is about **120 KB**. It installs for your Windows account, by default into `%LOCALAPPDATA%\Programs\VTD`, without administrator rights, PowerShell commands or a separate installer runtime. It downloads the matching **6.9 MB application package** and verifies its SHA-256 before installing. VTD appears in Start and in Windows Installed apps.
 
 The recommended **Whisper large-v3-turbo Q5 model is about 574 MB**, downloaded separately and checked against its known SHA-256. Custom URLs accept an optional SHA-256; all models must use the whisper.cpp GGML format. Existing model files are used in place. Internet is needed for initial downloads; dictation works offline afterwards. Put the matching `vtd-runtime-x64.zip` beside the installer and select an existing model to install offline.
 
-The initial installer release is unsigned; code signing is planned separately. For local builds and release automation, see [installer documentation](installer/README.md).
+The initial installer release is unsigned; code signing is planned separately. For local builds and release automation, see [installer documentation](https://github.com/matej-kaska/vtd-windows/blob/master/installer/README.md).
 
 <details>
 <summary>Portable ZIP installation</summary>
 
-Download `vtd-windows-x64.zip`, extract it into a writable folder where you intend to keep VTD, then run:
+Download [**`vtd-windows-x64.zip`**](https://github.com/matej-kaska/vtd-windows/releases/latest/download/vtd-windows-x64.zip), extract it into a writable folder where you intend to keep VTD, then run:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\Install.ps1
@@ -98,6 +105,7 @@ The figures below describe the **local release build measured on 30 September 20
 | Peak during the five-minute test | **105.7 MiB full working set** on a repeated start; **150.9 MiB** on the first start. |
 | Dedicated GPU memory | **About 948 MiB** with the Q5 model in an earlier GPU measurement on the same hardware. |
 | Idle CPU and process I/O | **No increase in CPU time or read/write bytes** during the sampled idle intervals. |
+| Installer | **About 120 KB**, with the application and model downloaded separately. |
 | Download and disk space | **About 6.9 MB ZIP / 9.9 MB extracted**, plus the separate **574 MB model**. |
 
 Private resident RAM counts pages unique to a process. The full working set also includes shared Windows and driver pages, so these are different numbers; Task Manager views may show different metrics. RAM uses **MiB** (1,048,576 bytes); download and file sizes use **MB** (1,000,000 bytes).
@@ -242,6 +250,6 @@ This fork targets **Windows x64 with Vulkan** and has been tested on the Radeon 
 
 Apple Silicon macOS support is planned, including **Metal and Core ML / Apple Neural Engine** acceleration. There is no macOS build yet.
 
-Based on [MQ37/vtd](https://github.com/MQ37/vtd), with its mascot adapted for the Windows tray. Speech recognition uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp). The original Linux source is retained; use the upstream project for Linux instructions.
+Based on [MQ37/vtd](https://github.com/MQ37/vtd). The [original mascot](https://github.com/MQ37/vtd/blob/master/logo.svg) appears above; a cropped version is used for the Windows tray. Speech recognition uses [whisper.cpp](https://github.com/ggml-org/whisper.cpp). The original Linux source is retained; use the upstream project for Linux instructions.
 
 Released under the [Unlicense](LICENSE). Bundled components retain their own licenses; see [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt).
