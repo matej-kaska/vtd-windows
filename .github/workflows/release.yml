@@ -8,8 +8,14 @@ on:
         description: Existing version tag to build and publish (for example v0.3.0)
         required: true
         type: string
+      artifact_run_id:
+        description: Reuse an existing artifact run for this tag commit (skip Windows rebuild)
+        required: false
+        default: ''
+        type: string
 permissions:
   contents: read
+  actions: read
 concurrency:
   group: windows-release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
@@ -18,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       tag: ${{ steps.version.outputs.tag }}
+      artifact_run_id: ${{ steps.version.outputs.artifact_run_id }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -25,10 +32,12 @@ jobs:
       - id: version
         env:
           RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          ARTIFACT_RUN_ID: ${{ inputs.artifact_run_id }}
+          GH_TOKEN: ${{ github.token }}
         shell: bash
         run: |
           python3 - <<'PY'
-          import os, re, subprocess, tomllib
+          import json, os, re, subprocess, tomllib
           tag = os.environ['RELEASE_TAG']
           if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?', tag):
               raise SystemExit('Use a version tag such as v0.3.0')
@@ -36,25 +45,39 @@ jobs:
           version = tomllib.loads(source)['package']['version']
           if tag[1:].split('-')[0] != version:
               raise SystemExit('Tag version must match Cargo.toml at that tag')
+          run_id = os.environ.get('ARTIFACT_RUN_ID', '')
+          if run_id:
+              if not re.fullmatch(r'[0-9]+', run_id):
+                  raise SystemExit('Artifact run ID must be numeric')
+              run = json.loads(subprocess.check_output(['gh', 'api', f"repos/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{run_id}"], text=True))
+              commit = subprocess.check_output(['git', 'rev-list', '-n', '1', f'refs/tags/{tag}'], text=True).strip()
+              if run['head_sha'] != commit:
+                  raise SystemExit('Reused artifacts must come from the exact tag commit')
           with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
               output.write(f'tag={tag}\n')
+              output.write(f'artifact_run_id={run_id}\n')
           PY
   build:
     needs: validate
+    if: needs.validate.outputs.artifact_run_id == ''
     uses: ./.github/workflows/windows-package.yml
     with:
       release_tag: ${{ needs.validate.outputs.tag }}
       source_ref: refs/tags/${{ needs.validate.outputs.tag }}
   publish:
     needs: [validate, build]
+    if: ${{ !cancelled() && needs.validate.result == 'success' && (needs.build.result == 'success' || needs.validate.outputs.artifact_run_id != '') }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
+      actions: read
     steps:
       - uses: actions/download-artifact@v4
         with:
           name: vtd-windows-release
           path: release
+          run-id: ${{ needs.validate.outputs.artifact_run_id || github.run_id }}
+          github-token: ${{ github.token }}
       - name: Verify and publish all matching assets together
         env:
           GH_TOKEN: ${{ github.token }}
@@ -89,7 +112,9 @@ jobs:
                   'Code signing is not included in this release.\n', encoding='utf-8')
               subprocess.run(['gh', 'release', 'create', tag, '--verify-tag', '--draft', '--title', f'VTD Windows {tag}', '--notes-file', 'notes.md'], check=True)
           subprocess.run(['gh', 'release', 'upload', tag, '--clobber', *files], check=True)
-          assets = json.loads(subprocess.check_output(['gh', 'api', f"repos/{os.environ['GH_REPO']}/releases/tags/{tag}"], text=True))['assets']
+          # The by-tag REST endpoint does not resolve an unpublished draft.
+          release_url = json.loads(subprocess.check_output(['gh', 'release', 'view', tag, '--json', 'apiUrl'], text=True))['apiUrl']
+          assets = json.loads(subprocess.check_output(['gh', 'api', release_url], text=True))['assets']
           for name in files:
               matches = [asset for asset in assets if asset['name'] == name]
               digest = 'sha256:' + hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()

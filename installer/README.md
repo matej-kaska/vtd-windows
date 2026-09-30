@@ -142,6 +142,11 @@ Use a new version tag for changes. An interrupted draft can be retried through
 manual workflow dispatch. Only the publish job gets `contents: write`; build and
 package jobs have read access. No custom secret is required.
 
+If publishing fails after the package artifact was uploaded, dispatch Release
+Windows with the same tag and its previous `artifact_run_id`. This skips the
+Windows build and reuses `vtd-windows-release` from that run. The workflow checks
+that the run's source commit is exactly the tag commit before allowing reuse.
+
 Signing is intentionally deferred. When certificates are introduced, sign the app
 EXEs **before** creating either ZIP, then sign the installer **before** generating
 the final `SHA256SUMS.txt`. The pipeline already marks these integration points.
