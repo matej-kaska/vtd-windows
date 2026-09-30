@@ -1,4 +1,4 @@
-use super::{tray, worker::Worker};
+use super::{autostart, clipboard, tray, worker::Worker};
 use anyhow::{Result, bail, ensure};
 use std::{
     cell::RefCell,
@@ -14,7 +14,7 @@ use windows_sys::Win32::{
     Foundation::*,
     System::{DataExchange::*, LibraryLoader::*, Memory::*, Threading::*},
     UI::{
-        Input::KeyboardAndMouse::*,
+        Input::{Ime::ImmDisableIME, KeyboardAndMouse::*},
         Shell::{NIM_ADD, NIM_DELETE, NIM_MODIFY},
         WindowsAndMessaging::*,
     },
@@ -24,16 +24,191 @@ const COPY: u32 = WM_APP + 1;
 const KEY: u32 = WM_APP + 2;
 const RESULT: u32 = WM_APP + 3;
 const PAUSE: u32 = WM_APP + 5;
+const SETTINGS: u32 = WM_APP + 6;
+pub(super) const SETTINGS_READY: u32 = WM_APP + 7;
+pub(super) const SETTINGS_APPLY: u32 = WM_APP + 8;
+pub(super) const UI_CLOSED: u32 = WM_APP + 9;
+pub(super) const MENU_READY: u32 = WM_APP + 10;
+pub(super) const MENU_COMMAND: u32 = WM_APP + 11;
+pub(super) const OPEN_SETTINGS: u32 = WM_APP + 12;
+const UI_CHECK: u32 = WM_APP + 13;
 static WINDOW: AtomicUsize = AtomicUsize::new(0);
 static TRIGGER: AtomicU32 = AtomicU32::new(119);
 static HELD: AtomicBool = AtomicBool::new(false);
 static TOGGLE: AtomicU32 = AtomicU32::new(120);
+static REPLAY: AtomicU32 = AtomicU32::new(121);
 static TOGGLE_HELD: AtomicBool = AtomicBool::new(false);
+static REPLAY_HELD: AtomicBool = AtomicBool::new(false);
 static ACTIVE: AtomicBool = AtomicBool::new(false);
 static PAUSED: AtomicBool = AtomicBool::new(false);
+static SETTINGS_OPEN: AtomicBool = AtomicBool::new(false);
 static TASKBAR_CREATED: AtomicU32 = AtomicU32::new(0);
 static EPOCH: AtomicUsize = AtomicUsize::new(0);
 thread_local! { static APP: RefCell<Option<App>> = const { RefCell::new(None) }; }
+thread_local! { static UI_CHILD: RefCell<Option<UiProcess>> = const { RefCell::new(None) }; }
+
+struct UiProcess {
+    child: std::process::Child,
+    window: HWND,
+    settings: bool,
+}
+
+struct KeyboardHook {
+    id: u32,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl KeyboardHook {
+    fn start() -> Result<Self> {
+        let (tx, rx) = mpsc::sync_channel(0);
+        #[cfg(test)]
+        let desktop = unsafe {
+            windows_sys::Win32::System::StationsAndDesktops::GetThreadDesktop(GetCurrentThreadId())
+                as usize
+        };
+        let thread = std::thread::Builder::new()
+            .stack_size(64 * 1024)
+            .spawn(move || unsafe {
+                #[cfg(test)]
+                windows_sys::Win32::System::StationsAndDesktops::SetThreadDesktop(desktop as _);
+                let mut msg = std::mem::zeroed();
+                PeekMessageW(&mut msg, null_mut(), 0, 0, PM_NOREMOVE);
+                let hook = SetWindowsHookExW(
+                    WH_KEYBOARD_LL,
+                    Some(keyboard),
+                    GetModuleHandleW(null_mut()),
+                    0,
+                );
+                let sent = tx.send((GetCurrentThreadId(), !hook.is_null()));
+                if !hook.is_null() {
+                    if sent.is_ok() {
+                        while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
+                            DispatchMessageW(&msg);
+                        }
+                    }
+                    UnhookWindowsHookEx(hook);
+                }
+            })?;
+        let (id, ready) = rx.recv()?;
+        if !ready {
+            let _ = thread.join();
+            bail!("Cannot register keyboard hook");
+        }
+        Ok(Self {
+            id,
+            thread: Some(thread),
+        })
+    }
+}
+
+impl Drop for KeyboardHook {
+    fn drop(&mut self) {
+        unsafe {
+            PostThreadMessageW(self.id, WM_QUIT, 0, 0);
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn ui_active() -> bool {
+    UI_CHILD.with(|slot| {
+        let mut state = slot.borrow_mut();
+        let Some(settings) = state.as_mut() else {
+            return false;
+        };
+        // Event-driven crash recovery, only on input/menu activity. No polling timer.
+        if matches!(settings.child.try_wait(), Ok(None)) {
+            true
+        } else {
+            *state = None;
+            SETTINGS_OPEN.store(false, Ordering::Release);
+            reset_held_keys();
+            false
+        }
+    })
+}
+
+fn settings_active() -> bool {
+    ui_active() && UI_CHILD.with(|state| state.borrow().as_ref().unwrap().settings)
+}
+
+fn ui_sender(pid: WPARAM) -> bool {
+    UI_CHILD.with(|state| {
+        state
+            .borrow()
+            .as_ref()
+            .is_some_and(|settings| settings.child.id() as usize == pid)
+    })
+}
+
+fn open_ui(settings: bool) -> Result<()> {
+    use std::os::windows::process::CommandExt;
+    if ui_active() {
+        if !settings {
+            return Ok(());
+        }
+        configuration()?;
+        let (hwnd, was_settings) = UI_CHILD.with(|state| {
+            let mut state = state.borrow_mut();
+            let child = state.as_mut().unwrap();
+            let previous = child.settings;
+            child.settings = true;
+            (child.window, previous)
+        });
+        SETTINGS_OPEN.store(true, Ordering::Release);
+        if !was_settings {
+            EPOCH.fetch_add(1, Ordering::Relaxed);
+            reset_held_keys();
+        }
+        if !hwnd.is_null() {
+            unsafe {
+                if was_settings {
+                    ShowWindow(hwnd, SW_RESTORE);
+                    SetForegroundWindow(hwnd);
+                } else {
+                    PostMessageW(hwnd, OPEN_SETTINGS, 0, 0);
+                }
+            }
+        }
+        return Ok(());
+    }
+    let mut command = std::process::Command::new(std::env::current_exe()?);
+    if settings {
+        configuration()?;
+        command.arg("__settings");
+    } else {
+        let busy = APP.with(|a| {
+            a.borrow()
+                .as_ref()
+                .is_some_and(|app| app.recording.is_some() || app.busy > 0)
+        });
+        command.args([
+            "__menu",
+            if PAUSED.load(Ordering::Relaxed) {
+                "1"
+            } else {
+                "0"
+            },
+            if busy { "1" } else { "0" },
+        ]);
+    }
+    let child = command.creation_flags(CREATE_NO_WINDOW).spawn()?;
+    UI_CHILD.with(|state| {
+        *state.borrow_mut() = Some(UiProcess {
+            child,
+            window: null_mut(),
+            settings,
+        })
+    });
+    if settings {
+        SETTINGS_OPEN.store(true, Ordering::Release);
+        EPOCH.fetch_add(1, Ordering::Relaxed);
+        reset_held_keys();
+    }
+    Ok(())
+}
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 struct Focus {
@@ -97,10 +272,15 @@ pub(super) fn wide(s: &str) -> Vec<u16> {
 
 pub fn control(command: &str) -> Result<()> {
     unsafe {
-        let hwnd = FindWindowW(wide("VTDWindows").as_ptr(), null_mut());
+        let hwnd = FindWindowW(windows_sys::w!("VTDWindows"), null_mut());
         ensure!(!hwnd.is_null(), "VTD is not running");
         if command == "stop" {
             PostMessageW(hwnd, WM_CLOSE, 0, 0);
+        } else if command == "settings" {
+            ensure!(
+                PostMessageW(hwnd, SETTINGS, 0, 0) != 0,
+                "Cannot open settings"
+            );
         } else if command == "pause" || command == "resume" {
             ensure!(
                 SendMessageTimeoutW(
@@ -132,25 +312,29 @@ pub fn control(command: &str) -> Result<()> {
 
 pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<()> {
     unsafe {
-        let mutex = CreateMutexW(null_mut(), 0, wide("Local\\VTD-Windows").as_ptr());
+        // This thread only owns an invisible message window, never a text field.
+        // Avoid initializing Windows text-input services when the tray gets focus.
+        // Settings have their own process; other applications' IMEs are unaffected.
+        ImmDisableIME(0);
+        let mutex = CreateMutexW(null_mut(), 0, windows_sys::w!("Local\\VTD-Windows"));
         ensure!(!mutex.is_null(), "Cannot create instance lock");
         if GetLastError() == ERROR_ALREADY_EXISTS {
             CloseHandle(mutex);
             bail!("VTD is already running");
         }
         let instance = GetModuleHandleW(null_mut());
-        let class = wide("VTDWindows");
+        let class = windows_sys::w!("VTDWindows");
         let wc = WNDCLASSW {
             lpfnWndProc: Some(wndproc),
             hInstance: instance,
-            lpszClassName: class.as_ptr(),
+            lpszClassName: class,
             ..std::mem::zeroed()
         };
         ensure!(RegisterClassW(&wc) != 0, "Cannot register window");
         let hwnd = CreateWindowExW(
             0,
-            class.as_ptr(),
-            class.as_ptr(),
+            class,
+            class,
             0,
             0,
             0,
@@ -164,7 +348,7 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
         ensure!(!hwnd.is_null(), "Cannot create message window");
         WINDOW.store(hwnd as usize, Ordering::Relaxed);
         TASKBAR_CREATED.store(
-            RegisterWindowMessageW(wide("TaskbarCreated").as_ptr()),
+            RegisterWindowMessageW(windows_sys::w!("TaskbarCreated")),
             Ordering::Relaxed,
         );
         ensure!(
@@ -173,11 +357,11 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
         );
         TRIGGER.store(cfg.trigger_key, Ordering::Relaxed);
         TOGGLE.store(cfg.toggle_key, Ordering::Relaxed);
-        let hook = SetWindowsHookExW(WH_KEYBOARD_LL, Some(keyboard), instance, 0);
-        ensure!(!hook.is_null(), "Cannot register keyboard hook");
+        REPLAY.store(cfg.replay_key, Ordering::Relaxed);
+        let hook = KeyboardHook::start()?;
         let (tx, jobs) = mpsc::channel::<Request>();
         let (replies, rx) = mpsc::channel();
-        let worker_cfg = cfg.clone();
+        let idle_unload_seconds = cfg.idle_unload_seconds;
         let address = hwnd as usize;
         std::thread::spawn(move || {
             let send = |r| {
@@ -186,8 +370,8 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
             };
             let mut engine: Option<Worker> = None;
             loop {
-                let job = if engine.is_some() && worker_cfg.idle_unload_seconds > 0 {
-                    match jobs.recv_timeout(Duration::from_secs(worker_cfg.idle_unload_seconds)) {
+                let job = if engine.is_some() && idle_unload_seconds > 0 {
+                    match jobs.recv_timeout(Duration::from_secs(idle_unload_seconds)) {
                         Ok(j) => j,
                         Err(mpsc::RecvTimeoutError::Timeout) => {
                             if ACTIVE.load(Ordering::Relaxed) {
@@ -268,13 +452,13 @@ pub fn run(cfg: Config, mut capture_next: Option<std::path::PathBuf>) -> Result<
                 mouse: null_mut(),
             })
         });
-        status(hwnd, "VTD: připraveno");
+        status(hwnd, "VTD: ready");
         let mut msg = std::mem::zeroed();
         while GetMessageW(&mut msg, null_mut(), 0, 0) > 0 {
             TranslateMessage(&msg);
             DispatchMessageW(&msg);
         }
-        UnhookWindowsHookEx(hook);
+        drop(hook);
         tray::update(hwnd, "", NIM_DELETE);
         APP.with(|a| *a.borrow_mut() = None);
         CloseHandle(mutex);
@@ -286,9 +470,28 @@ unsafe extern "system" fn keyboard(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
     unsafe {
         if code == HC_ACTION as i32 && !PAUSED.load(Ordering::Relaxed) {
             let event = &*(l as *const KBDLLHOOKSTRUCT);
+            if SETTINGS_OPEN.load(Ordering::Acquire) {
+                if event.vkCode == TRIGGER.load(Ordering::Relaxed)
+                    || event.vkCode == TOGGLE.load(Ordering::Relaxed)
+                    || event.vkCode == REPLAY.load(Ordering::Relaxed)
+                {
+                    PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, UI_CHECK, 0, 0);
+                }
+                return CallNextHookEx(null_mut(), code, w, l);
+            }
             {
                 let down = w as u32 == WM_KEYDOWN || w as u32 == WM_SYSKEYDOWN;
                 let up = w as u32 == WM_KEYUP || w as u32 == WM_SYSKEYUP;
+                if event.vkCode == REPLAY.load(Ordering::Relaxed) {
+                    if down {
+                        REPLAY_HELD.store(true, Ordering::Relaxed);
+                    }
+                    if up && REPLAY_HELD.swap(false, Ordering::Relaxed) {
+                        EPOCH.fetch_add(1, Ordering::Relaxed);
+                        PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, KEY, 4, 0);
+                    }
+                    return 1;
+                }
                 if event.vkCode == TOGGLE.load(Ordering::Relaxed) {
                     if down && !TOGGLE_HELD.swap(true, Ordering::Relaxed) {
                         PostMessageW(WINDOW.load(Ordering::Relaxed) as HWND, KEY, 3, 0);
@@ -336,6 +539,9 @@ unsafe extern "system" fn mouse(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
 
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     unsafe {
+        if clipboard::message(hwnd, msg, w) {
+            return 0;
+        }
         if msg != 0 && msg == TASKBAR_CREATED.load(Ordering::Relaxed) {
             let mut text = [0u16; 128];
             let len = GetWindowTextW(hwnd, text.as_mut_ptr(), text.len() as i32);
@@ -348,19 +554,90 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
         }
         match msg {
             tray::EVENT => {
-                if l as u32 == WM_RBUTTONUP || l as u32 == WM_LBUTTONUP {
-                    match tray::menu(hwnd, PAUSED.load(Ordering::Relaxed)) {
-                        1 => APP.with(|a| {
-                            if let Some(app) = a.borrow_mut().as_mut() {
-                                app.pause(!PAUSED.load(Ordering::Relaxed));
-                            }
-                        }),
-                        2 => {
-                            PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                if (l as u32 == WM_RBUTTONUP || l as u32 == WM_LBUTTONUP)
+                    && let Err(e) = open_ui(false)
+                {
+                    status(hwnd, &format!("Cannot open menu: {e:#}"));
+                }
+                0
+            }
+            MENU_COMMAND if ui_sender(w) => {
+                match l {
+                    1 => APP.with(|a| {
+                        if let Some(app) = a.borrow_mut().as_mut() {
+                            app.pause(!PAUSED.load(Ordering::Relaxed));
                         }
-                        _ => {}
+                    }),
+                    2 => {
+                        PostMessageW(hwnd, WM_CLOSE, 0, 0);
+                    }
+                    _ => return 0,
+                }
+                1
+            }
+            SETTINGS => {
+                if let Err(e) = open_ui(true) {
+                    status(hwnd, &format!("Cannot open settings: {e:#}"));
+                }
+                0
+            }
+            UI_CHECK => {
+                ui_active();
+                0
+            }
+            SETTINGS_READY | MENU_READY if ui_sender(w) => {
+                let dialog = l as HWND;
+                if msg == SETTINGS_READY && dialog.is_null() {
+                    if configuration().is_err() {
+                        return 0;
+                    }
+                    UI_CHILD.with(|state| {
+                        let mut state = state.borrow_mut();
+                        let child = state.as_mut().unwrap();
+                        child.settings = true;
+                        child.window = null_mut();
+                    });
+                    SETTINGS_OPEN.store(true, Ordering::Release);
+                    EPOCH.fetch_add(1, Ordering::Relaxed);
+                    reset_held_keys();
+                    return 1;
+                }
+                let mut pid = 0;
+                GetWindowThreadProcessId(dialog, &mut pid);
+                if pid as usize != w {
+                    return 0;
+                }
+                UI_CHILD.with(|state| {
+                    if let Some(settings) = state.borrow_mut().as_mut() {
+                        settings.window = dialog;
+                        if msg == MENU_READY && settings.settings {
+                            PostMessageW(dialog, OPEN_SETTINGS, 0, 0);
+                        }
+                    }
+                });
+                1
+            }
+            SETTINGS_APPLY if ui_sender(w) => {
+                let result = configuration().and_then(|_| Config::load(&vtd::config::path()?));
+                match result {
+                    Ok(cfg) => {
+                        APP.with(|app| {
+                            if let Some(app) = app.borrow_mut().as_mut() {
+                                app.update_preferences(cfg);
+                            }
+                        });
+                        1
+                    }
+                    Err(e) => {
+                        status(hwnd, &format!("Cannot apply settings: {e:#}"));
+                        0
                     }
                 }
+            }
+            UI_CLOSED if ui_sender(w) => {
+                UI_CHILD.with(|state| *state.borrow_mut() = None);
+                SETTINGS_OPEN.store(false, Ordering::Release);
+                reset_held_keys();
                 0
             }
             KEY | RESULT | WM_TIMER | PAUSE => {
@@ -385,6 +662,21 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
                     .is_some_and(|app| copy_text(hwnd, &app.last).is_ok())
                     as LRESULT
             }),
+            WM_CLOSE => {
+                if let Err(e) = clipboard::restore(hwnd) {
+                    status(hwnd, &e.to_string());
+                    return 0;
+                }
+                let dialog =
+                    UI_CHILD.with(|state| state.borrow().as_ref().map(|settings| settings.window));
+                if let Some(dialog) = dialog
+                    && !dialog.is_null()
+                {
+                    PostMessageW(dialog, WM_CLOSE, 0, 0);
+                }
+                DestroyWindow(hwnd);
+                0
+            }
             WM_DESTROY => {
                 PostQuitMessage(0);
                 0
@@ -395,6 +687,23 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
 }
 
 impl App {
+    fn update_preferences(&mut self, cfg: Config) {
+        if self.cfg.language != cfg.language {
+            // The next worker reads the committed language from disk.
+            let _ = self.tx.send(Request::Unload);
+        }
+        self.cfg.language = cfg.language;
+        self.cfg.trigger_key = cfg.trigger_key;
+        self.cfg.toggle_key = cfg.toggle_key;
+        self.cfg.replay_key = cfg.replay_key;
+        self.cfg.mute_output = cfg.mute_output;
+        TRIGGER.store(cfg.trigger_key, Ordering::Relaxed);
+        TOGGLE.store(cfg.toggle_key, Ordering::Relaxed);
+        REPLAY.store(cfg.replay_key, Ordering::Relaxed);
+        reset_held_keys();
+        status(self.hwnd, "VTD: settings saved");
+    }
+
     fn track_target(&mut self) -> Result<Focus> {
         if self.mouse.is_null() {
             self.mouse = unsafe {
@@ -416,8 +725,7 @@ impl App {
 
     fn pause(&mut self, paused: bool) {
         PAUSED.store(paused, Ordering::Relaxed);
-        HELD.store(false, Ordering::Relaxed);
-        TOGGLE_HELD.store(false, Ordering::Relaxed);
+        reset_held_keys();
         if paused {
             self.stop(true);
             let _ = self.tx.send(Request::Unload);
@@ -425,17 +733,25 @@ impl App {
         status(
             self.hwnd,
             if paused {
-                "VTD: pozastaveno"
+                "VTD: paused"
             } else if self.busy > 0 {
-                "VTD: zpracovávám"
+                "VTD: processing"
             } else {
-                "VTD: připraveno"
+                "VTD: ready"
             },
         );
     }
 
     fn key(&mut self, action: usize) {
-        if PAUSED.load(Ordering::Relaxed) {
+        if PAUSED.load(Ordering::Relaxed) || settings_active() {
+            return;
+        }
+        if action == 4 {
+            let result = insert(&self.last, Focus::current(), self.hwnd, true);
+            match result {
+                Ok(()) => status(self.hwnd, "VTD: last transcript inserted"),
+                Err(e) => status(self.hwnd, &e.to_string()),
+            }
             return;
         }
         if action == 2 {
@@ -450,20 +766,16 @@ impl App {
         }
         if self.recording.is_some() {
             if self.finishing {
-                unsafe {
-                    KillTimer(self.hwnd, 2);
+                self.stop(false);
+            } else {
+                if action == 3 || self.cfg.toggle {
+                    self.finish();
                 }
-                self.finishing = false;
-                if self.busy == 0 {
-                    self.release_target();
-                }
-            } else if action == 3 || self.cfg.toggle {
-                self.finish();
+                return;
             }
-            return;
         }
         if self.busy >= 2 {
-            status(self.hwnd, "VTD: dokončuji předchozí přepisy");
+            status(self.hwnd, "VTD: finishing previous transcriptions");
             return;
         }
         let focus = Focus::current();
@@ -478,7 +790,7 @@ impl App {
                 unsafe {
                     SetTimer(self.hwnd, 1, self.cfg.max_recording_seconds * 1000, None);
                 }
-                status(self.hwnd, "VTD: nahrávám · Esc zruší");
+                status(self.hwnd, "VTD: recording - Esc to cancel");
             }
             Err(e) => status(self.hwnd, &e.to_string()),
         }
@@ -532,13 +844,13 @@ impl App {
         if cancel {
             ACTIVE.store(self.busy > 0, Ordering::Relaxed);
             drop(recording);
-            status(self.hwnd, "VTD: připraveno");
+            status(self.hwnd, "VTD: ready");
             return;
         }
         match recording.finish() {
             Ok((samples, rate)) if samples.len() >= rate as usize * 3 / 10 => {
                 self.busy += 1;
-                status(self.hwnd, "VTD: přepisuji");
+                status(self.hwnd, "VTD: transcribing");
                 if self
                     .tx
                     .send(Request::Transcribe(Job {
@@ -553,7 +865,7 @@ impl App {
                         self.release_target();
                     }
                     ACTIVE.store(self.busy > 0, Ordering::Relaxed);
-                    status(self.hwnd, "Přepisovací vlákno skončilo. Restartujte VTD.");
+                    status(self.hwnd, "Transcription thread stopped. Restart VTD.");
                 }
             }
             Ok(_) => {
@@ -561,7 +873,7 @@ impl App {
                     self.release_target();
                 }
                 ACTIVE.store(self.busy > 0, Ordering::Relaxed);
-                status(self.hwnd, "VTD: příliš krátký záznam");
+                status(self.hwnd, "VTD: recording too short");
             }
             Err(e) => {
                 if self.busy == 0 {
@@ -578,7 +890,7 @@ impl App {
             match reply {
                 Reply::Unloaded => {
                     if self.recording.is_none() && self.busy == 0 {
-                        status(self.hwnd, "VTD: model uspán");
+                        status(self.hwnd, "VTD: model unloaded");
                     }
                 }
                 Reply::Done(focus, result, elapsed) => {
@@ -588,7 +900,7 @@ impl App {
                     }
                     ACTIVE.store(self.recording.is_some() || self.busy > 0, Ordering::Relaxed);
                     match result {
-                        Ok(text) if text.is_empty() => status(self.hwnd, "VTD: bez řeči"),
+                        Ok(text) if text.is_empty() => status(self.hwnd, "VTD: no speech"),
                         Ok(text) => {
                             self.last = text;
                             if let Err(e) =
@@ -596,12 +908,15 @@ impl App {
                             {
                                 status(
                                     self.hwnd,
-                                    &format!("{e}. Přepis je dostupný přes vtd copy."),
+                                    &format!(
+                                        "{e}. Click the target field and press F{}.",
+                                        self.cfg.replay_key - 0x6f
+                                    ),
                                 );
                             } else {
                                 status(
                                     self.hwnd,
-                                    &format!("VTD: hotovo za {:.2} s", elapsed.as_secs_f64()),
+                                    &format!("VTD: completed in {:.2} s", elapsed.as_secs_f64()),
                                 );
                             }
                         }
@@ -611,9 +926,9 @@ impl App {
                         }
                     }
                     if self.recording.is_some() {
-                        status(self.hwnd, "VTD: nahrávám · Esc zruší");
+                        status(self.hwnd, "VTD: recording - Esc to cancel");
                     } else if self.busy > 0 {
-                        status(self.hwnd, "VTD: přepisuji");
+                        status(self.hwnd, "VTD: transcribing");
                     }
                 }
             }
@@ -622,69 +937,71 @@ impl App {
 }
 
 fn insert(text: &str, target: Focus, hwnd: HWND, clipboard: bool) -> Result<()> {
+    ensure!(!text.is_empty(), "No transcript available yet");
     ensure!(
         target.window != 0 && target == Focus::current(),
-        "Změnilo se cílové okno nebo pole"
+        "The target window or field changed"
     );
     unsafe {
         for key in [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN] {
             ensure!(
                 GetAsyncKeyState(key as i32) >= 0,
-                "Je stisknutá modifikační klávesa"
+                "A modifier key is held down"
             );
         }
-        let keys: Vec<(u16, u16, u32)> = if clipboard {
-            copy_text(hwnd, text)?;
-            ensure!(
-                target == Focus::current(),
-                "Změnilo se cílové okno nebo pole"
-            );
-            vec![
-                (VK_CONTROL, 0, 0),
-                (0x56, 0, 0),
-                (0x56, 0, KEYEVENTF_KEYUP),
-                (VK_CONTROL, 0, KEYEVENTF_KEYUP),
-            ]
+        let input = |key, unit, flags| INPUT {
+            r#type: INPUT_KEYBOARD,
+            Anonymous: INPUT_0 {
+                ki: KEYBDINPUT {
+                    wVk: key,
+                    wScan: unit,
+                    dwFlags: flags,
+                    time: 0,
+                    dwExtraInfo: 0,
+                },
+            },
+        };
+        let sent_all = if clipboard {
+            clipboard::prepare(hwnd, text, target.window as HWND)?;
+            if target != Focus::current() {
+                clipboard::restore(hwnd)?;
+                bail!("The target window or field changed");
+            }
+            let keys = [
+                input(VK_CONTROL, 0, 0),
+                input(0x56, 0, 0),
+                input(0x56, 0, KEYEVENTF_KEYUP),
+                input(VK_CONTROL, 0, KEYEVENTF_KEYUP),
+            ];
+            let sent = SendInput(4, keys.as_ptr(), std::mem::size_of::<INPUT>() as i32);
+            if sent != 4 {
+                clipboard::restore(hwnd)?;
+            }
+            sent == 4
         } else {
-            text.encode_utf16()
+            let keys: Vec<_> = text
+                .encode_utf16()
                 .flat_map(|unit| {
                     [
-                        (0, unit, KEYEVENTF_UNICODE),
-                        (0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
+                        input(0, unit, KEYEVENTF_UNICODE),
+                        input(0, unit, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP),
                     ]
                 })
-                .collect()
+                .collect();
+            SendInput(
+                keys.len() as u32,
+                keys.as_ptr(),
+                std::mem::size_of::<INPUT>() as i32,
+            ) as usize
+                == keys.len()
         };
-        let input: Vec<_> = keys
-            .into_iter()
-            .map(|(key, unit, flags)| INPUT {
-                r#type: INPUT_KEYBOARD,
-                Anonymous: INPUT_0 {
-                    ki: KEYBDINPUT {
-                        wVk: key,
-                        wScan: unit,
-                        dwFlags: flags,
-                        time: 0,
-                        dwExtraInfo: 0,
-                    },
-                },
-            })
-            .collect();
-        let sent = SendInput(
-            input.len() as u32,
-            input.as_ptr(),
-            std::mem::size_of::<INPUT>() as i32,
-        );
-        ensure!(
-            sent as usize == input.len(),
-            "Windows nepovolil vložení celého textu"
-        );
+        ensure!(sent_all, "Windows did not allow all text to be inserted");
     }
     Ok(())
 }
 
 fn copy_text(hwnd: HWND, text: &str) -> Result<()> {
-    ensure!(!text.is_empty(), "Zatím není žádný přepis");
+    ensure!(!text.is_empty(), "No transcript available yet");
     unsafe {
         let data = wide(text);
         let memory = GlobalAlloc(GMEM_MOVEABLE, data.len() * 2);
@@ -698,13 +1015,13 @@ fn copy_text(hwnd: HWND, text: &str) -> Result<()> {
         GlobalUnlock(memory);
         if OpenClipboard(hwnd) == 0 {
             GlobalFree(memory);
-            bail!("Schránka je používána jinou aplikací");
+            bail!("The clipboard is in use by another application");
         }
         let ok = EmptyClipboard() != 0 && !SetClipboardData(13, memory).is_null();
         CloseClipboard();
         if !ok {
             GlobalFree(memory);
-            bail!("Nelze zapsat do schránky");
+            bail!("Cannot write to the clipboard");
         }
     }
     Ok(())
@@ -712,7 +1029,7 @@ fn copy_text(hwnd: HWND, text: &str) -> Result<()> {
 
 fn status(hwnd: HWND, text: &str) {
     let text = if PAUSED.load(Ordering::Relaxed) {
-        "VTD: pozastaveno"
+        "VTD: paused"
     } else {
         text
     };
@@ -724,26 +1041,31 @@ fn status(hwnd: HWND, text: &str) {
 }
 
 pub fn autostart(mode: Option<&str>) -> Result<()> {
-    use std::os::windows::process::CommandExt;
-    let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
-    let mut command = std::process::Command::new("reg.exe");
     match mode {
-        Some("on") => {
-            command
-                .args(["add", key, "/v", "VTD Windows", "/t", "REG_SZ", "/d"])
-                .arg(format!("\"{}\" run", std::env::current_exe()?.display()))
-                .arg("/f");
-        }
-        Some("off") => {
-            command.args(["delete", key, "/v", "VTD Windows", "/f"]);
-        }
+        Some("on") => autostart::set_enabled(true),
+        Some("off") => autostart::set_enabled(false),
         _ => bail!("Use: vtd autostart on|off"),
     }
-    ensure!(
-        command.creation_flags(CREATE_NO_WINDOW).status()?.success(),
-        "Cannot update autostart"
-    );
-    Ok(())
+}
+
+fn reset_held_keys() {
+    HELD.store(false, Ordering::Relaxed);
+    TOGGLE_HELD.store(false, Ordering::Relaxed);
+    REPLAY_HELD.store(false, Ordering::Relaxed);
+}
+
+fn configuration() -> Result<()> {
+    APP.with(|app| {
+        let app = app.borrow();
+        let app = app
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("VTD is not running"))?;
+        ensure!(
+            app.recording.is_none() && app.busy == 0,
+            "Settings are available after recording and transcription finish."
+        );
+        Ok(())
+    })
 }
 
 #[cfg(test)]
@@ -751,8 +1073,139 @@ mod tests {
     use super::*;
 
     #[test]
+    fn exited_settings_process_does_not_leave_shortcuts_paused() {
+        use std::{
+            os::windows::process::CommandExt,
+            process::{Command, Stdio},
+        };
+        let mut child = Command::new(std::env::current_exe().unwrap())
+            .arg("--list")
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .creation_flags(CREATE_NO_WINDOW)
+            .spawn()
+            .unwrap();
+        child.wait().unwrap();
+        SETTINGS_OPEN.store(true, Ordering::Release);
+        UI_CHILD.with(|state| {
+            *state.borrow_mut() = Some(UiProcess {
+                child,
+                window: null_mut(),
+                settings: true,
+            })
+        });
+        assert!(!settings_active());
+        assert!(!SETTINGS_OPEN.load(Ordering::Acquire));
+        assert!(UI_CHILD.with(|state| state.borrow().is_none()));
+    }
+
+    #[test]
+    #[ignore = "run alone: uses an isolated Windows desktop"]
+    fn keyboard_pump_survives_blocked_tray_thread() {
+        use windows_sys::Win32::System::StationsAndDesktops::*;
+        static DELIVERED: AtomicUsize = AtomicUsize::new(0);
+        unsafe extern "system" fn deliver(code: i32, w: WPARAM, l: LPARAM) -> LRESULT {
+            let msg = unsafe { &*(l as *const MSG) };
+            if code != HC_ACTION as i32 || w != PM_REMOVE as usize || msg.message != WM_APP + 42 {
+                return unsafe { CallNextHookEx(null_mut(), code, w, l) };
+            }
+            let (vk, message) = [
+                (119, WM_KEYDOWN),
+                (119, WM_KEYUP),
+                (120, WM_KEYDOWN),
+                (120, WM_KEYDOWN),
+                (120, WM_KEYUP),
+                (121, WM_KEYDOWN),
+                (121, WM_KEYUP),
+                (VK_ESCAPE as u32, WM_KEYDOWN),
+            ][msg.wParam];
+            let event = KBDLLHOOKSTRUCT {
+                vkCode: vk,
+                ..unsafe { std::mem::zeroed() }
+            };
+            unsafe {
+                keyboard(
+                    HC_ACTION as i32,
+                    message as usize,
+                    &event as *const _ as isize,
+                );
+            }
+            DELIVERED.fetch_add(1, Ordering::Release);
+            unsafe { CallNextHookEx(null_mut(), code, w, l) }
+        }
+        unsafe {
+            let station = CreateWindowStationW(null_mut(), 0, 0x000f037f, null_mut());
+            assert!(!station.is_null());
+            assert_ne!(SetProcessWindowStation(station), 0);
+            let desktop = CreateDesktopW(
+                windows_sys::w!("VtdKeyboardTest"),
+                null_mut(),
+                null_mut(),
+                0,
+                0x000f01ff,
+                null_mut(),
+            );
+            assert!(!desktop.is_null());
+            assert_ne!(SetThreadDesktop(desktop), 0);
+            let hwnd = CreateWindowExW(
+                0,
+                windows_sys::w!("STATIC"),
+                windows_sys::w!("VtdKeyboardTest"),
+                0,
+                0,
+                0,
+                0,
+                0,
+                HWND_MESSAGE,
+                null_mut(),
+                null_mut(),
+                null_mut(),
+            );
+            assert!(!hwnd.is_null());
+            WINDOW.store(hwnd as usize, Ordering::Relaxed);
+            TRIGGER.store(119, Ordering::Relaxed);
+            TOGGLE.store(120, Ordering::Relaxed);
+            REPLAY.store(121, Ordering::Relaxed);
+            ACTIVE.store(true, Ordering::Relaxed);
+            let hook = KeyboardHook::start().unwrap();
+            let monitor = SetWindowsHookExW(WH_GETMESSAGE, Some(deliver), null_mut(), hook.id);
+            assert!(!monitor.is_null());
+            let mut msg = std::mem::zeroed();
+            for blocked in [None, Some(&SETTINGS_OPEN), Some(&PAUSED), None] {
+                PAUSED.store(false, Ordering::Relaxed);
+                SETTINGS_OPEN.store(false, Ordering::Release);
+                if let Some(flag) = blocked {
+                    flag.store(true, Ordering::Relaxed);
+                }
+                reset_held_keys();
+                DELIVERED.store(0, Ordering::Relaxed);
+                for id in 0..8 {
+                    assert_ne!(PostThreadMessageW(hook.id, WM_APP + 42, id, 0), 0);
+                }
+                std::thread::sleep(Duration::from_millis(1200));
+                assert_eq!(DELIVERED.load(Ordering::Acquire), 8);
+                let mut actions = Vec::new();
+                while PeekMessageW(&mut msg, hwnd, KEY, KEY, PM_REMOVE) != 0 {
+                    actions.push(msg.wParam);
+                }
+                assert_eq!(
+                    actions,
+                    if blocked.is_none() {
+                        vec![1, 0, 3, 4, 2]
+                    } else {
+                        vec![]
+                    }
+                );
+            }
+            UnhookWindowsHookEx(monitor);
+            drop(hook);
+            DestroyWindow(hwnd);
+        }
+    }
+
+    #[test]
     fn completing_one_transcription_keeps_the_next_active() {
-        let (tx, _jobs) = mpsc::channel();
+        let (tx, jobs) = mpsc::channel();
         let (replies, rx) = mpsc::channel();
         let mut app = App {
             cfg: Config::default(),
@@ -779,5 +1232,30 @@ mod tests {
             assert_eq!(app.busy, remaining);
             assert_eq!(ACTIVE.load(Ordering::Relaxed), remaining > 0);
         }
+        for result in [
+            Ok("Příliš žluťoučký kůň.".into()),
+            Ok(String::new()),
+            Err(anyhow::anyhow!("decode failed")),
+        ] {
+            app.busy = 1;
+            replies
+                .send(Reply::Done(focus, result, Duration::ZERO))
+                .unwrap();
+            app.results();
+            assert_eq!(app.last, "Příliš žluťoučký kůň.");
+        }
+        replies.send(Reply::Unloaded).unwrap();
+        app.results();
+        assert_eq!(app.last, "Příliš žluťoučký kůň.");
+        assert!(insert("", focus, null_mut(), false).is_err());
+        let mut preferences = app.cfg.clone();
+        preferences.replay_key = 122;
+        app.update_preferences(preferences.clone());
+        assert_eq!(REPLAY.load(Ordering::Relaxed), 122);
+        assert!(jobs.try_recv().is_err()); // A shortcut edit retains the warm engine.
+        preferences.language = if app.cfg.language == "de" { "cs" } else { "de" }.into();
+        app.update_preferences(preferences);
+        assert!(matches!(jobs.try_recv().unwrap(), Request::Unload));
+        assert_eq!(app.last, "Příliš žluťoučký kůň.");
     }
 }

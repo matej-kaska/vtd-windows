@@ -1,9 +1,11 @@
 use anyhow::{Context, Result, ensure};
-use std::{ffi::CStr, time::Instant};
-use vtd::{audio, config::Config};
-use whisper_rs::{
-    FullParams, SamplingStrategy, WhisperContext, WhisperContextParameters, WhisperState,
+use std::{
+    ffi::{CStr, CString, c_char},
+    ptr::{null, null_mut},
+    time::Instant,
 };
+use vtd::{audio, config::Config};
+use whisper_rs::whisper_rs_sys::*;
 
 #[derive(Debug)]
 pub struct Gpu {
@@ -13,7 +15,6 @@ pub struct Gpu {
 }
 
 pub fn gpus() -> Vec<Gpu> {
-    use whisper_rs::whisper_rs_sys::*;
     let mut result = Vec::new();
     unsafe {
         for i in 0..ggml_backend_dev_count() {
@@ -36,14 +37,25 @@ pub fn gpus() -> Vec<Gpu> {
 }
 
 pub struct Engine {
-    state: WhisperState,
+    ctx: *mut whisper_context,
+    state: *mut whisper_state,
+    language: *const c_char,
+}
+impl Drop for Engine {
+    fn drop(&mut self) {
+        unsafe {
+            if !self.state.is_null() {
+                whisper_free_state(self.state);
+            }
+            whisper_free(self.ctx);
+        }
+    }
 }
 impl Engine {
     pub fn load(cfg: &Config) -> Result<Self> {
-        ensure!(
-            cfg.language == "auto" || whisper_rs::get_lang_id(&cfg.language).is_some(),
-            "Unknown language"
-        );
+        let language = (cfg.language != "auto")
+            .then(|| whisper_rs::get_lang_id(&cfg.language).context("Unknown language"))
+            .transpose()?;
         ensure!(
             cfg.model.is_file(),
             "Model missing: {}. Run scripts/download-model.ps1.",
@@ -63,19 +75,29 @@ impl Engine {
             .context("Requested Vulkan GPU not available; no automatic CPU fallback")?;
         eprintln!("VTD GPU {}: {}", gpu.index, gpu.name);
         let start = Instant::now();
-        let mut params = WhisperContextParameters::default();
-        params
-            .use_gpu(true)
-            .gpu_device(gpu.index as i32)
-            .flash_attn(true);
-        let ctx = WhisperContext::new_with_params(&cfg.model, params).context("Loading Whisper")?;
-        ensure!(
-            ctx.is_multilingual(),
-            "Use a multilingual model, not an .en model"
-        );
-        let state = ctx.create_state()?;
-        let mut engine = Self { state };
-        engine.decode(cfg, &[0.0; 16000])?;
+        let path = CString::new(cfg.model.to_str().context("Invalid model path")?)?;
+        let mut engine = unsafe {
+            let mut params = whisper_context_default_params();
+            params.use_gpu = true;
+            params.gpu_device = gpu.index as i32;
+            params.flash_attn = true;
+            let ctx = whisper_init_from_file_with_params_no_state(path.as_ptr(), params);
+            ensure!(!ctx.is_null(), "Loading Whisper");
+            let mut engine = Self {
+                ctx,
+                state: null_mut(),
+                language: language.map_or(null(), |id| whisper_lang_str(id)),
+            };
+            ensure!(
+                whisper_is_multilingual(ctx) != 0,
+                "Use a multilingual model, not an .en model"
+            );
+            engine.state = whisper_init_state(ctx);
+            ensure!(!engine.state.is_null(), "Creating Whisper state");
+            engine
+        };
+        engine.prepare(cfg, &[0.0; 16000])?;
+        engine.decode(cfg)?;
         eprintln!(
             "VTD model loaded and warmed in {:.2}s",
             start.elapsed().as_secs_f64()
@@ -83,12 +105,17 @@ impl Engine {
         Ok(engine)
     }
 
-    pub fn transcribe(&mut self, cfg: &Config, samples: &[f32]) -> Result<String> {
-        ensure!(samples.len() <= 16000 * 300, "Recording exceeds 5 minutes");
-        if samples.len() < 4800 || !audio::audible(samples, cfg.silence_rms) {
+    pub fn transcribe(&mut self, cfg: &Config, samples: impl AsRef<[f32]>) -> Result<String> {
+        ensure!(
+            samples.as_ref().len() <= 16000 * 300,
+            "Recording exceeds 5 minutes"
+        );
+        if samples.as_ref().len() < 4800 || !audio::audible(samples.as_ref(), cfg.silence_rms) {
             return Ok(String::new());
         }
-        let mut text = self.decode(cfg, samples)?;
+        self.prepare(cfg, samples.as_ref())?;
+        drop(samples);
+        let mut text = self.decode(cfg)?;
         if cfg.filter_subtitle_credits {
             let len = without_subtitle_credit(&text).len();
             text.truncate(len);
@@ -96,30 +123,54 @@ impl Engine {
         Ok(text)
     }
 
-    fn decode(&mut self, cfg: &Config, samples: &[f32]) -> Result<String> {
-        let mut params = FullParams::new(SamplingStrategy::BeamSearch {
-            beam_size: 5,
-            patience: -1.0,
-        });
-        params.set_n_threads(cfg.threads);
-        params.set_language((cfg.language != "auto").then_some(cfg.language.as_str()));
-        params.set_translate(false);
-        params.set_no_context(true);
-        params.set_no_timestamps(true);
-        params.set_print_special(false);
-        params.set_print_progress(false);
-        params.set_print_realtime(false);
-        params.set_print_timestamps(false);
-        params.set_suppress_blank(true);
-        params.set_suppress_nst(true);
-        params.set_temperature(0.0);
-        params.set_temperature_inc(0.2);
-        self.state.full(params, samples)?;
+    fn prepare(&mut self, cfg: &Config, samples: &[f32]) -> Result<()> {
+        let result = unsafe {
+            whisper_pcm_to_mel_with_state(
+                self.ctx,
+                self.state,
+                samples.as_ptr(),
+                samples.len() as i32,
+                cfg.threads,
+            )
+        };
+        ensure!(result == 0, "Calculating spectrogram: {result}");
+        Ok(())
+    }
+
+    fn decode(&mut self, cfg: &Config) -> Result<String> {
         let mut text = String::new();
-        for segment in self.state.as_iter() {
-            text.push_str(&segment.to_str_lossy()?);
+        unsafe {
+            let mut params =
+                whisper_full_default_params(whisper_sampling_strategy_WHISPER_SAMPLING_BEAM_SEARCH);
+            params.beam_search.beam_size = 5;
+            params.beam_search.patience = -1.0;
+            params.n_threads = cfg.threads;
+            params.language = self.language;
+            params.translate = false;
+            params.no_context = true;
+            params.no_timestamps = true;
+            params.print_special = false;
+            params.print_progress = false;
+            params.print_realtime = false;
+            params.print_timestamps = false;
+            params.suppress_blank = true;
+            params.suppress_nst = true;
+            params.temperature = 0.0;
+            params.temperature_inc = 0.2;
+            let result = whisper_full_with_state(self.ctx, self.state, params, null(), 0);
+            ensure!(result == 0, "Transcribing: {result}");
+            let result = whisper_set_mel_with_state(self.ctx, self.state, null(), 0, 80);
+            ensure!(result == 0, "Releasing spectrogram: {result}");
+            for i in 0..whisper_full_n_segments_from_state(self.state) {
+                let segment = whisper_full_get_segment_text_from_state(self.state, i);
+                ensure!(!segment.is_null(), "Missing segment text");
+                text.push_str(&CStr::from_ptr(segment).to_string_lossy());
+            }
         }
-        Ok(text.trim().to_owned())
+        let start = text.len() - text.trim_start().len();
+        text.truncate(text.trim_end().len());
+        text.drain(..start.min(text.len()));
+        Ok(text)
     }
 }
 
@@ -130,22 +181,21 @@ fn without_subtitle_credit(text: &str) -> &str {
     let Some(name) = words.next() else {
         return text;
     };
-    let name = name.to_lowercase();
-    let valid = match name.as_str() {
-        "johnyx" | "johnnyx" => true,
-        "x" => words
-            .next()
-            .is_some_and(|w| matches!(w.to_lowercase().as_str(), "johny" | "johnny")),
-        _ => false,
-    };
+    let equal = |a: &str, b: &str| a.chars().flat_map(char::to_lowercase).eq(b.chars());
+    let valid = equal(name, "johnyx")
+        || equal(name, "johnnyx")
+        || (equal(name, "x")
+            && words
+                .next()
+                .is_some_and(|w| equal(w, "johny") || equal(w, "johnny")));
     if !valid
         || !words
             .next()
-            .is_some_and(|w| matches!(w.to_lowercase().as_str(), "vytvořil" | "vytvoril"))
+            .is_some_and(|w| equal(w, "vytvořil") || equal(w, "vytvoril"))
     {
         return text;
     }
-    let Some(word) = words.next().filter(|w| w.to_lowercase() == "titulky") else {
+    let Some(word) = words.next().filter(|w| equal(w, "titulky")) else {
         return text;
     };
     text[..word.as_ptr() as usize - text.as_ptr() as usize].trim_end()

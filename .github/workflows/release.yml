@@ -1,0 +1,99 @@
+name: Release Windows
+on:
+  push:
+    tags: ['v[0-9]*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing version tag to build and publish (for example v0.3.0)
+        required: true
+        type: string
+permissions:
+  contents: read
+concurrency:
+  group: windows-release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: version
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import os, re, subprocess, tomllib
+          tag = os.environ['RELEASE_TAG']
+          if not re.fullmatch(r'v\d+\.\d+\.\d+(?:-[A-Za-z0-9.-]+)?', tag):
+              raise SystemExit('Use a version tag such as v0.3.0')
+          source = subprocess.check_output(['git', 'show', f'refs/tags/{tag}:Cargo.toml'], text=True)
+          version = tomllib.loads(source)['package']['version']
+          if tag[1:].split('-')[0] != version:
+              raise SystemExit('Tag version must match Cargo.toml at that tag')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f'tag={tag}\n')
+          PY
+  build:
+    needs: validate
+    uses: ./.github/workflows/windows-package.yml
+    with:
+      release_tag: ${{ needs.validate.outputs.tag }}
+      source_ref: refs/tags/${{ needs.validate.outputs.tag }}
+  publish:
+    needs: [validate, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: vtd-windows-release
+          path: release
+      - name: Verify and publish all matching assets together
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_TAG: ${{ needs.validate.outputs.tag }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd release
+          sha256sum --check SHA256SUMS.txt
+          python3 - <<'PY'
+          import hashlib, json, os, pathlib, subprocess
+          tag = os.environ['RELEASE_TAG']
+          files = ['VTD-Setup.exe', 'vtd-runtime-x64.zip', 'vtd-windows-x64.zip', 'SHA256SUMS.txt', 'size-report.json']
+          report = json.loads(pathlib.Path('size-report.json').read_text(encoding='utf-8-sig'))
+          expected_url = f"https://github.com/{os.environ['GH_REPO']}/releases/download/{tag}/vtd-runtime-x64.zip"
+          payload_hash = hashlib.sha256(pathlib.Path('vtd-runtime-x64.zip').read_bytes()).hexdigest()
+          if report['PayloadUrl'] != expected_url or report['PayloadSha256'] != payload_hash:
+              raise SystemExit('Installer and runtime payload do not belong to this release')
+          if pathlib.Path('VTD-Setup.exe').stat().st_size > 300 * 1024:
+              raise SystemExit('Installer exceeded the 300 KiB size budget')
+          existing = subprocess.run(['gh', 'release', 'view', tag, '--json', 'isDraft'], text=True, capture_output=True)
+          if existing.returncode == 0:
+              if not json.loads(existing.stdout)['isDraft']:
+                  raise SystemExit('Published releases are immutable; create a new version tag')
+          else:
+              pathlib.Path('notes.md').write_text(
+                  'Small per-user Windows installer with shortcut, language, startup and mute settings.\n\n'
+                  'Download the recommended Whisper model, use a custom HTTPS URL, or select an existing model.\n\n'
+                  'Download VTD-Setup.exe for installation, or vtd-windows-x64.zip for portable use. '
+                  'The installer downloads its matching vtd-runtime-x64.zip automatically. '
+                  'Code signing is not included in this release.\n', encoding='utf-8')
+              subprocess.run(['gh', 'release', 'create', tag, '--verify-tag', '--draft', '--title', f'VTD Windows {tag}', '--notes-file', 'notes.md'], check=True)
+          subprocess.run(['gh', 'release', 'upload', tag, '--clobber', *files], check=True)
+          assets = json.loads(subprocess.check_output(['gh', 'api', f"repos/{os.environ['GH_REPO']}/releases/tags/{tag}"], text=True))['assets']
+          for name in files:
+              matches = [asset for asset in assets if asset['name'] == name]
+              digest = 'sha256:' + hashlib.sha256(pathlib.Path(name).read_bytes()).hexdigest()
+              if len(matches) != 1 or matches[0]['size'] != pathlib.Path(name).stat().st_size or matches[0]['digest'] != digest:
+                  raise SystemExit(f'Uploaded asset verification failed: {name}; release remains a draft')
+          subprocess.run(['gh', 'release', 'edit', tag, '--draft=false', '--prerelease=' + ('true' if '-' in tag else 'false')], check=True)
+          PY

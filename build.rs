@@ -1,5 +1,7 @@
 fn main() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
+    println!("cargo:rerun-if-changed=assets/settings.rc");
+    println!("cargo:rerun-if-changed=assets/vtd.manifest");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -8,9 +10,16 @@ fn main() {
         .join("assets/icon.ico");
     let script = out.join("icon.rc");
     let resource = out.join("icon.res");
+    let assets = std::path::PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").unwrap())
+        .join("assets")
+        .to_string_lossy()
+        .replace('\\', "/");
     std::fs::write(
         &script,
-        format!("1 ICON \"{}\"", icon.to_string_lossy().replace('\\', "/")),
+        format!(
+            "#pragma code_page(65001)\n1 ICON \"{}\"\n1 24 \"{assets}/vtd.manifest\"\n#include \"{assets}/settings.rc\"\n",
+            icon.to_string_lossy().replace('\\', "/")
+        ),
     )
     .unwrap();
     assert!(

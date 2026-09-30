@@ -1,4 +1,5 @@
-use super::runtime::wide;
+use anyhow::{Result, ensure};
+use std::{cell::Cell, ptr::null_mut};
 use windows_sys::Win32::{
     Foundation::*,
     Graphics::Gdi::*,
@@ -7,6 +8,64 @@ use windows_sys::Win32::{
 };
 
 pub const EVENT: u32 = WM_APP + 4;
+thread_local! { static OPEN_SETTINGS: Cell<bool> = const { Cell::new(false) }; }
+
+// Menus initialize process-wide Windows UI caches. Own them in the same
+// short-lived process as settings so none remain in the resident tray.
+pub fn show_menu(paused: bool, busy: bool) -> Result<u32> {
+    unsafe {
+        let instance = GetModuleHandleW(null_mut());
+        let class = windows_sys::w!("VTDMenu");
+        let wc = WNDCLASSW {
+            lpfnWndProc: Some(menu_proc),
+            hInstance: instance,
+            lpszClassName: class,
+            ..std::mem::zeroed()
+        };
+        ensure!(RegisterClassW(&wc) != 0, "Cannot register menu window");
+        let hwnd = CreateWindowExW(
+            0,
+            class,
+            class,
+            0,
+            0,
+            0,
+            0,
+            0,
+            null_mut(),
+            null_mut(),
+            instance,
+            null_mut(),
+        );
+        ensure!(!hwnd.is_null(), "Cannot create menu window");
+        let result = super::settings::notify(super::runtime::MENU_READY, hwnd as LPARAM);
+        let command = if result.is_ok() {
+            menu(hwnd, paused, busy)
+        } else {
+            0
+        };
+        DestroyWindow(hwnd);
+        result?;
+        Ok(if OPEN_SETTINGS.with(Cell::get) {
+            4
+        } else {
+            command
+        })
+    }
+}
+
+unsafe extern "system" fn menu_proc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+    unsafe {
+        match msg {
+            super::runtime::OPEN_SETTINGS | WM_CLOSE => {
+                OPEN_SETTINGS.with(|value| value.set(msg == super::runtime::OPEN_SETTINGS));
+                EndMenu();
+                0
+            }
+            _ => DefWindowProcW(hwnd, msg, w, l),
+        }
+    }
+}
 
 fn symbol(kind: u8) -> HBITMAP {
     unsafe {
@@ -70,18 +129,21 @@ pub fn update(hwnd: HWND, text: &str, operation: u32) -> bool {
         icon.cbSize = std::mem::size_of_val(&icon) as u32;
         icon.hWnd = hwnd;
         icon.uID = 1;
-        icon.uFlags = NIF_MESSAGE | NIF_ICON | NIF_TIP;
-        icon.uCallbackMessage = EVENT;
-        icon.hIcon = LoadImageW(
-            GetModuleHandleW(std::ptr::null()),
-            std::ptr::without_provenance(1),
-            IMAGE_ICON,
-            GetSystemMetrics(SM_CXSMICON),
-            GetSystemMetrics(SM_CYSMICON),
-            LR_SHARED,
-        ) as HICON;
-        if icon.hIcon.is_null() {
-            return false;
+        icon.uFlags = NIF_TIP;
+        if operation == NIM_ADD {
+            icon.uFlags |= NIF_MESSAGE | NIF_ICON;
+            icon.uCallbackMessage = EVENT;
+            icon.hIcon = LoadImageW(
+                GetModuleHandleW(std::ptr::null()),
+                std::ptr::without_provenance(1),
+                IMAGE_ICON,
+                GetSystemMetrics(SM_CXSMICON),
+                GetSystemMetrics(SM_CYSMICON),
+                LR_SHARED,
+            ) as HICON;
+            if icon.hIcon.is_null() {
+                return false;
+            }
         }
         for (dest, unit) in icon.szTip.iter_mut().take(127).zip(text.encode_utf16()) {
             *dest = unit;
@@ -90,7 +152,7 @@ pub fn update(hwnd: HWND, text: &str, operation: u32) -> bool {
     }
 }
 
-pub fn menu(hwnd: HWND, paused: bool) -> u32 {
+pub fn menu(hwnd: HWND, paused: bool, busy: bool) -> u32 {
     unsafe {
         let menu = CreatePopupMenu();
         if menu.is_null() {
@@ -105,9 +167,13 @@ pub fn menu(hwnd: HWND, paused: bool) -> u32 {
             menu,
             MF_STRING,
             1,
-            wide(if paused { "Spustit" } else { "Pozastavit" }).as_ptr(),
+            if paused {
+                windows_sys::w!("Resume")
+            } else {
+                windows_sys::w!("Pause")
+            },
         );
-        AppendMenuW(menu, MF_STRING, 2, wide("Ukončit").as_ptr());
+        AppendMenuW(menu, MF_STRING, 2, windows_sys::w!("Exit"));
         let icons = [symbol(u8::from(paused)), symbol(2)];
         for (position, &bitmap) in icons.iter().enumerate() {
             let mut item: MENUITEMINFOW = std::mem::zeroed();
@@ -116,6 +182,13 @@ pub fn menu(hwnd: HWND, paused: bool) -> u32 {
             item.hbmpItem = bitmap;
             SetMenuItemInfoW(menu, position as u32, 1, &item);
         }
+        AppendMenuW(menu, MF_SEPARATOR, 0, std::ptr::null());
+        AppendMenuW(
+            menu,
+            MF_STRING | if busy { MF_GRAYED } else { 0 },
+            4,
+            windows_sys::w!("Settings..."),
+        );
         let mut point: POINT = std::mem::zeroed();
         GetCursorPos(&mut point);
         SetForegroundWindow(hwnd);

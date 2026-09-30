@@ -1,4 +1,5 @@
 use crate::config::Config;
+use crate::output::OutputMute;
 use anyhow::{Context, Result, bail};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use std::sync::{Arc, Mutex};
@@ -44,6 +45,7 @@ impl Buffer {
 
 pub struct Recording {
     stream: cpal::Stream,
+    _mute: Option<OutputMute>,
     data: Arc<Mutex<Buffer>>,
     rate: u32,
     started: Instant,
@@ -127,6 +129,11 @@ impl Recording {
             cpal::SampleFormat::U16 => stream!(u16, |x: &u16| (*x as f32 - 32768.0) / 32768.0),
             other => bail!("Unsupported microphone format: {other}"),
         };
+        let mute = cfg
+            .mute_output
+            .then(OutputMute::new)
+            .transpose()
+            .context("Cannot mute output")?;
         stream.play()?;
         eprintln!(
             "VTD audio open: {:.2}ms, {rate} Hz, {channels} channels",
@@ -134,6 +141,7 @@ impl Recording {
         );
         Ok(Self {
             stream,
+            _mute: mute,
             data,
             rate,
             started,
@@ -150,11 +158,8 @@ impl Recording {
             bail!("Microphone: {err}");
         }
         let seconds = buf.samples.len() as f64 / self.rate as f64;
-        let rms = (buf.samples.iter().map(|x| (*x as f64).powi(2)).sum::<f64>()
-            / buf.samples.len().max(1) as f64)
-            .sqrt();
         eprintln!(
-            "VTD capture: {seconds:.2}s audio, {:.2}s elapsed, first_packet={:.2}ms, RMS {rms:.4}",
+            "VTD capture: {seconds:.2}s audio, {:.2}s elapsed, first_packet={:.2}ms",
             self.started.elapsed().as_secs_f64(),
             buf.first_sample.unwrap_or_default().as_secs_f64() * 1000.0
         );

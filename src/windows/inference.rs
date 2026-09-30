@@ -14,7 +14,12 @@ pub fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config_path = config::path()?;
     match args.first().map(String::as_str) {
-        Some("__worker") => run(&Config::load(&config_path)?)?,
+        Some("__worker") => {
+            let cfg = Config::load(&config_path)?;
+            drop(config_path);
+            drop(args);
+            run(&cfg)?;
+        }
         Some("devices") => {
             for g in engine::gpus() {
                 println!("GPU {}: {} (discrete={})", g.index, g.name, g.discrete);
@@ -63,7 +68,7 @@ pub fn run(cfg: &Config) -> Result<()> {
             unsafe { std::slice::from_raw_parts_mut(samples.as_mut_ptr().cast::<u8>(), count * 4) };
         input.read_exact(bytes)?;
         let result = engine
-            .transcribe(cfg, &samples)
+            .transcribe(cfg, samples)
             .map_err(|e| format!("{e:#}"));
         serde_json::to_writer(&mut output, &result)?;
         output.write_all(b"\n")?;

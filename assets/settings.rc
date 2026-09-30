@@ -1,0 +1,23 @@
+#pragma code_page(65001)
+#include <windows.h>
+
+2 DIALOGEX 0, 0, 298, 256
+STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
+CAPTION "VTD - Settings"
+FONT 9, "Segoe UI"
+BEGIN
+    GROUPBOX "Keyboard shortcuts", -1, 12, 10, 274, 94
+    LTEXT "&Hold to record:", 1011, 22, 29, 176, 12
+    COMBOBOX 1001, 208, 26, 66, 130, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "&Start / stop recording:", -1, 22, 53, 176, 12
+    COMBOBOX 1002, 208, 50, 66, 130, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "&Insert last transcript:", -1, 22, 77, 176, 12
+    COMBOBOX 1003, 208, 74, 66, 130, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    LTEXT "Speech &language:", -1, 14, 119, 94, 12
+    COMBOBOX 1004, 112, 116, 174, 180, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX "Start when I sign in to &Windows", 1005, 14, 147, 272, 14, WS_TABSTOP
+    AUTOCHECKBOX "&Mute playback while recording", 1006, 14, 171, 272, 14, WS_TABSTOP
+    LTEXT "Dictation shortcuts are paused while settings are open.", -1, 14, 195, 272, 24
+    DEFPUSHBUTTON "&Save", IDOK, 158, 228, 60, 17, WS_TABSTOP
+    PUSHBUTTON "Cancel", IDCANCEL, 226, 228, 60, 17, WS_TABSTOP
+END

@@ -1,0 +1,77 @@
+name: Windows package
+on:
+  workflow_call:
+    inputs:
+      release_tag:
+        type: string
+        default: ''
+      source_ref:
+        type: string
+        default: ''
+permissions:
+  contents: read
+jobs:
+  package:
+    runs-on: windows-2022
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.source_ref || github.sha }}
+      - run: rustup update stable
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .tools/vulkan
+            .tools/libclang
+          key: windows-sdk-${{ hashFiles('scripts/setup-windows.ps1', 'scripts/extract-sdk.py') }}
+      - name: Prepare build tools
+        shell: pwsh
+        run: |
+          ./scripts/setup-windows.ps1
+          ./scripts/setup-installer.ps1
+      - name: Build and test
+        shell: pwsh
+        run: |
+          ./scripts/build-windows.ps1 -Test
+          cargo clippy --release --locked --features engine --all-targets -- -D warnings
+          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
+          ./scripts/build-windows.ps1
+          ./scripts/test-installer.ps1
+      - name: Package unsigned Windows release
+        shell: pwsh
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+        run: |
+          # Future application signing belongs before these archives are made;
+          # installer signing belongs before the final SHA256SUMS generation.
+          ./scripts/package-windows.ps1
+          ./scripts/build-installer.ps1 -ReleaseTag $env:RELEASE_TAG -Repository $env:RELEASE_REPOSITORY
+          Copy-Item dist/vtd-windows-x64.zip dist/installer/
+          $files = @('VTD-Setup.exe', 'vtd-runtime-x64.zip', 'vtd-windows-x64.zip', 'size-report.json')
+          $files | ForEach-Object {
+            $file = Join-Path dist/installer $_
+            (Get-FileHash $file -Algorithm SHA256).Hash.ToLowerInvariant() + '  ' + $_
+          } | Set-Content dist/installer/SHA256SUMS.txt -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vtd-windows-release
+          if-no-files-found: error
+          path: |
+            dist/installer/VTD-Setup.exe
+            dist/installer/vtd-runtime-x64.zip
+            dist/installer/vtd-windows-x64.zip
+            dist/installer/SHA256SUMS.txt
+            dist/installer/size-report.json
+      - name: Preserve installer test evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-test-evidence
+          if-no-files-found: ignore
+          path: |
+            artifacts/installer-test-*/results.json
+            artifacts/installer-test-*/build.log
+            artifacts/installer-test-*/download/test-status.ini
+            artifacts/installer-test-*/http/requests.log

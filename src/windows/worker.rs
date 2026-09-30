@@ -1,6 +1,6 @@
 use anyhow::{Result, ensure};
 use std::{
-    io::{BufRead, BufReader, BufWriter, Write},
+    io::{BufRead, BufReader, Write},
     os::windows::process::CommandExt,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
 };
@@ -13,12 +13,13 @@ pub fn command() -> Result<Command> {
     );
     let mut command = Command::new(path);
     command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);
+    command.env("DISABLE_VULKAN_OBS_CAPTURE", "1");
     Ok(command)
 }
 
 pub struct Worker {
     child: Child,
-    input: BufWriter<ChildStdin>,
+    input: ChildStdin,
     output: BufReader<ChildStdout>,
 }
 
@@ -31,8 +32,8 @@ impl Worker {
             .stderr(Stdio::inherit())
             .spawn()?;
         Ok(Self {
-            input: BufWriter::new(child.stdin.take().unwrap()),
-            output: BufReader::new(child.stdout.take().unwrap()),
+            input: child.stdin.take().unwrap(),
+            output: BufReader::with_capacity(1024, child.stdout.take().unwrap()),
             child,
         })
     }
@@ -47,7 +48,6 @@ impl Worker {
             )
         };
         self.input.write_all(bytes)?;
-        self.input.flush()?;
         drop(samples);
         let mut reply = String::new();
         ensure!(

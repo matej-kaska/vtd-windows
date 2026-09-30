@@ -5,6 +5,12 @@ pub mod audio;
 #[path = "windows/config.rs"]
 pub mod config;
 #[cfg(windows)]
+#[path = "windows/languages.rs"]
+pub mod languages;
+#[cfg(windows)]
+#[path = "windows/output.rs"]
+mod output;
+#[cfg(windows)]
 #[path = "windows/recording.rs"]
 pub mod recording;
 

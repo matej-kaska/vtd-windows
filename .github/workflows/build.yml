@@ -1,5 +1,9 @@
 name: Build
-on: [push, pull_request, workflow_dispatch]
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
 permissions:
   contents: read
 jobs:
@@ -10,19 +14,4 @@ jobs:
       - run: rustup update stable
       - run: cargo check --locked
   windows:
-    runs-on: windows-2022
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup update stable
-      - shell: pwsh
-        run: ./scripts/setup-windows.ps1
-      - shell: pwsh
-        run: |
-          ./scripts/build-windows.ps1
-          ./scripts/build-windows.ps1 -Test
-          cargo clippy --release --locked --features engine --all-targets -- -D warnings
-          ./scripts/package-windows.ps1
-      - uses: actions/upload-artifact@v4
-        with:
-          name: vtd-windows-x64
-          path: dist/vtd-windows-x64.zip
+    uses: ./.github/workflows/windows-package.yml
