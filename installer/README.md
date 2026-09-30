@@ -69,7 +69,8 @@ Tests execute the real compiled installer/uninstaller: downloads, hash failures,
 invalid model responses, cached model reuse, preferences, autostart, UTF-8 paths
 and config preservation, rollback with a locked DLL, and data retention on
 uninstall. Test fixtures do not exercise speech inference. Logs and results are
-kept under `artifacts/installer-test-*` and uploaded by CI.
+kept under `artifacts/installer-test-*`. Run these tests locally; GitHub Actions
+only builds and packages releases.
 
 ## Updates and uninstall
 
@@ -122,22 +123,24 @@ For a custom download, set `ModelSource=url`, `ModelUrl=https://...` and optiona
 
 ## Releases
 
-The regular Build workflow runs the reusable Windows package workflow on branches
-and pull requests. Release publication happens only on a `vMAJOR.MINOR.PATCH` tag
+The Build Windows workflow runs only when manually dispatched. Ordinary branch
+pushes and pull requests do not consume build minutes. Release publication happens
+on a `vMAJOR.MINOR.PATCH` tag
 (optionally with a prerelease suffix), or manual dispatch naming an existing tag.
 The numeric version must match `Cargo.toml` at that tag.
 
 1. Commit the tested source, workflow and version change; merge to the default branch.
 2. Create and push the new version tag, for example `v0.3.0`.
-3. The pipeline checks the version, builds/tests/lints Windows, runs installer
-   integration tests and creates the installer, runtime ZIP and portable ZIP.
+3. The pipeline checks the version, builds Windows and creates the installer,
+   runtime ZIP and portable ZIP. It runs no tests or Clippy. Build tools and
+   compiled dependencies are cached, with a 30-minute limit for the Windows job.
 4. The publish job creates a draft release, uploads all assets and verifies their
    sizes and SHA-256 digests through the GitHub API before making it public.
 
 Published releases are never overwritten: the installer pins the payload hash.
 Use a new version tag for changes. An interrupted draft can be retried through
 manual workflow dispatch. Only the publish job gets `contents: write`; build and
-test jobs have read access. No custom secret is required.
+package jobs have read access. No custom secret is required.
 
 Signing is intentionally deferred. When certificates are introduced, sign the app
 EXEs **before** creating either ZIP, then sign the installer **before** generating

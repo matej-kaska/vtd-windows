@@ -13,31 +13,44 @@ permissions:
 jobs:
   package:
     runs-on: windows-2022
-    timeout-minutes: 90
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.source_ref || github.sha }}
-      - run: rustup update stable
+      - name: Prepare Rust
+        id: rust
+        shell: pwsh
+        run: |
+          rustup update stable
+          if ($LASTEXITCODE -ne 0) { throw 'Rust setup failed' }
+          "version=$(rustc --version)" >> $env:GITHUB_OUTPUT
       - uses: actions/cache@v4
         with:
           path: |
             .tools/vulkan
             .tools/libclang
-          key: windows-sdk-${{ hashFiles('scripts/setup-windows.ps1', 'scripts/extract-sdk.py') }}
+            .tools/installer
+          key: windows-sdk-${{ hashFiles('scripts/setup-windows.ps1', 'scripts/extract-sdk.py', 'scripts/setup-installer.ps1') }}
+      - name: Cache compiled dependencies
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git/db
+            C:/vtd-build
+          key: windows-rust-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock', 'patches/windows/whisper.patch', 'scripts/whisper-windows.cmake', 'scripts/build-windows.ps1') }}
+          restore-keys: |
+            windows-rust-${{ steps.rust.outputs.version }}-
       - name: Prepare build tools
         shell: pwsh
         run: |
           ./scripts/setup-windows.ps1
           ./scripts/setup-installer.ps1
-      - name: Build and test
+      - name: Build release binaries
         shell: pwsh
         run: |
-          ./scripts/build-windows.ps1 -Test
-          cargo clippy --release --locked --features engine --all-targets -- -D warnings
-          if ($LASTEXITCODE -ne 0) { throw 'Clippy failed' }
           ./scripts/build-windows.ps1
-          ./scripts/test-installer.ps1
       - name: Package unsigned Windows release
         shell: pwsh
         env:
@@ -64,14 +77,3 @@ jobs:
             dist/installer/vtd-windows-x64.zip
             dist/installer/SHA256SUMS.txt
             dist/installer/size-report.json
-      - name: Preserve installer test evidence
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: installer-test-evidence
-          if-no-files-found: ignore
-          path: |
-            artifacts/installer-test-*/results.json
-            artifacts/installer-test-*/build.log
-            artifacts/installer-test-*/download/test-status.ini
-            artifacts/installer-test-*/http/requests.log

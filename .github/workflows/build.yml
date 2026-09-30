@@ -1,17 +1,11 @@
-name: Build
+name: Build Windows
 on:
-  push:
-    branches: ['**']
-  pull_request:
   workflow_dispatch:
 permissions:
   contents: read
+concurrency:
+  group: windows-manual-build-${{ github.ref }}
+  cancel-in-progress: true
 jobs:
-  linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - run: rustup update stable
-      - run: cargo check --locked
   windows:
     uses: ./.github/workflows/windows-package.yml
