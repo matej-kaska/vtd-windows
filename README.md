@@ -19,7 +19,7 @@ Click a text field, speak, and VTD inserts the transcript. Choose **Canary, Para
 - **Automatic model unloading** after 30 idle seconds, leaving only the tray process.
 - **Native Rust and Win32 UI**, without a bundled browser or GUI framework.
 
-The model picker and Canary/Parakeet engine require **v0.4.0 or newer**. Existing installations keep their selected model and preferences.
+The model picker and Canary/Parakeet engine require **v0.4.1 or newer**. Existing installations keep their selected model and preferences.
 
 ## Get started
 

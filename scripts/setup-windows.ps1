@@ -5,7 +5,7 @@ $sdk = "$root\.tools\vulkan-sdk.exe"
 $hash = '94a82d378f7a5e3e54c9db7d2fb7016af136e14ac0a18dbf0f2f67a36352d141'
 $stamp = "$root\.tools\vulkan\.vtd-sdk"
 $ready = (Test-Path $stamp) -and (Get-Content $stamp -Raw) -eq $hash
-foreach ($name in @('Bin\glslc.exe', 'Lib\vulkan-1.lib', 'Include\vulkan\vulkan.hpp')) {
+foreach ($name in @('Bin\glslc.exe', 'Lib\vulkan-1.lib', 'Include\vulkan\vulkan.hpp', 'Include\spirv\unified1\spirv.hpp', 'Lib\cmake\SPIRV-Headers\SPIRV-HeadersConfig.cmake')) {
     $ready = $ready -and (Test-Path "$root\.tools\vulkan\$name")
 }
 if (-not $ready) {

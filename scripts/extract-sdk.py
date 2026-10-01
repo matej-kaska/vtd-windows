@@ -28,9 +28,13 @@ with open(source, "rb") as file, mmap.mmap(file.fileno(), 0, access=mmap.ACCESS_
                 for block in range(start, end, 1024 * 1024):
                     output.write(data[block:min(block + 1024 * 1024, end)])
             subprocess.run([seven_zip, "x", str(archive), f"-o{root}", "-y", "-bso0", "-bsp0", "-mmt=2",
-                            "Bin/glslc.exe", "Lib/vulkan-1.lib", "Include/vulkan/*", "Include/vk_video/*"], check=True)
+                            "Bin/glslc.exe", "Lib/vulkan-1.lib", "Include/vulkan/*", "Include/vk_video/*",
+                            "Include/spirv/*", "Lib/cmake/SPIRV-Headers/*"], check=True)
         finally:
             archive.unlink(missing_ok=True)
         count += 1
-if count == 0 or not all((root / name).is_file() for name in ("Bin/glslc.exe", "Lib/vulkan-1.lib", "Include/vulkan/vulkan.hpp")):
+if count == 0 or not all((root / name).is_file() for name in (
+    "Bin/glslc.exe", "Lib/vulkan-1.lib", "Include/vulkan/vulkan.hpp",
+    "Include/spirv/unified1/spirv.hpp", "Lib/cmake/SPIRV-Headers/SPIRV-HeadersConfig.cmake",
+)):
     raise RuntimeError("Vulkan SDK extraction failed")
