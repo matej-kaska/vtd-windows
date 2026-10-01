@@ -1,23 +1,40 @@
 #pragma code_page(65001)
 #include <windows.h>
 
-2 DIALOGEX 0, 0, 298, 256
+2 DIALOGEX 0, 0, 414, 362
 STYLE DS_SETFONT | DS_MODALFRAME | DS_CENTER | WS_POPUP | WS_CAPTION | WS_SYSMENU
 CAPTION "VTD - Settings"
 FONT 9, "Segoe UI"
 BEGIN
-    GROUPBOX "Keyboard shortcuts", -1, 12, 10, 274, 94
-    LTEXT "&Hold to record:", 1011, 22, 29, 136, 12
-    CONTROL "", 1001, "msctls_hotkey32", WS_TABSTOP | WS_BORDER, 160, 26, 114, 14
-    LTEXT "&Start / stop recording:", -1, 22, 53, 136, 12
-    CONTROL "", 1002, "msctls_hotkey32", WS_TABSTOP | WS_BORDER, 160, 50, 114, 14
-    LTEXT "&Insert last transcript:", -1, 22, 77, 136, 12
-    CONTROL "", 1003, "msctls_hotkey32", WS_TABSTOP | WS_BORDER, 160, 74, 114, 14
-    LTEXT "Speech &language:", -1, 14, 119, 94, 12
-    COMBOBOX 1004, 112, 116, 174, 180, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
-    AUTOCHECKBOX "Start when I sign in to &Windows", 1005, 14, 147, 272, 14, WS_TABSTOP
-    AUTOCHECKBOX "&Mute playback while recording", 1006, 14, 171, 272, 14, WS_TABSTOP
-    LTEXT "Click a shortcut field and press the key or combination. Shortcuts are paused while this window is open.", -1, 14, 195, 272, 24
-    DEFPUSHBUTTON "&Save", IDOK, 158, 228, 60, 17, WS_TABSTOP
-    PUSHBUTTON "Cancel", IDCANCEL, 226, 228, 60, 17, WS_TABSTOP
+    GROUPBOX "Speech model", -1, 12, 8, 390, 145
+    AUTORADIOBUTTON "Canary", 1007, 22, 22, 194, 12, WS_GROUP | WS_TABSTOP
+    AUTORADIOBUTTON "Parakeet", 1008, 22, 58, 194, 12
+    AUTORADIOBUTTON "Whisper", 1009, 22, 94, 194, 12
+    AUTORADIOBUTTON "Keep current custom model", 1010, 22, 133, 370, 12
+    PUSHBUTTON "Download", 1034, 322, 20, 70, 17, WS_GROUP | WS_TABSTOP
+    PUSHBUTTON "Download", 1035, 322, 56, 70, 17, WS_TABSTOP
+    PUSHBUTTON "Download", 1036, 322, 92, 70, 17, WS_TABSTOP
+    LTEXT "", 1017, 34, 39, 358, 12
+    LTEXT "", 1030, 220, 24, 96, 12
+    LTEXT "", 1018, 34, 75, 358, 12
+    LTEXT "", 1031, 220, 60, 96, 12
+    LTEXT "", 1019, 34, 111, 358, 12
+    LTEXT "", 1032, 220, 96, 96, 12
+    LTEXT "", 1021, 14, 158, 388, 24, WS_GROUP
+    GROUPBOX "Keyboard shortcuts (paused while Settings is open)", -1, 12, 188, 390, 54
+    LTEXT "&Hold to record:", 1011, 22, 201, 116, 12
+    CONTROL "", 1001, "msctls_hotkey32", WS_TABSTOP | WS_BORDER, 22, 216, 112, 14
+    LTEXT "&Start / stop recording:", -1, 150, 201, 116, 12
+    CONTROL "", 1002, "msctls_hotkey32", WS_TABSTOP | WS_BORDER, 150, 216, 112, 14
+    LTEXT "&Insert last transcript:", -1, 278, 201, 116, 12
+    CONTROL "", 1003, "msctls_hotkey32", WS_TABSTOP | WS_BORDER, 278, 216, 112, 14
+    LTEXT "Speech &language:", -1, 14, 256, 94, 12
+    COMBOBOX 1004, 112, 253, 290, 180, CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP
+    AUTOCHECKBOX "Start when I sign in to &Windows", 1005, 14, 278, 190, 14, WS_TABSTOP
+    AUTOCHECKBOX "&Mute playback while recording", 1006, 210, 278, 192, 14, WS_TABSTOP
+    LTEXT "", 1024, 14, 302, 388, 28
+    PUSHBUTTON "Stop download", 1041, 12, 338, 86, 17, WS_TABSTOP
+    PUSHBUTTON "&Apply", 1040, 104, 338, 108, 17, WS_TABSTOP
+    DEFPUSHBUTTON "&Save", IDOK, 220, 338, 108, 17, WS_TABSTOP
+    PUSHBUTTON "Cancel", IDCANCEL, 336, 338, 66, 17, WS_TABSTOP
 END

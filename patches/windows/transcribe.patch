@@ -1,0 +1,2241 @@
+diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
+index a71838ea..05130dee 100644
+--- a/ggml/src/ggml-alloc.c
++++ b/ggml/src/ggml-alloc.c
+@@ -476,9 +476,14 @@ struct leaf_alloc {
+ 
+ struct node_alloc {
+     struct tensor_alloc dst;
+-    struct tensor_alloc src[GGML_MAX_SRC];
++    size_t src;
++    uint32_t src_mask;
+ };
+ 
++#if GGML_MAX_SRC > 32
++#error "node_alloc source mask is too small"
++#endif
++
+ struct ggml_gallocr {
+     ggml_backend_buffer_type_t * bufts; // [n_buffers]
+     struct vbuffer ** buffers; // [n_buffers]
+@@ -490,6 +495,8 @@ struct ggml_gallocr {
+ 
+     struct node_alloc * node_allocs; // [n_nodes]
+     int n_nodes;
++    struct tensor_alloc * src_allocs;
++    size_t src_capacity;
+ 
+     struct leaf_alloc * leaf_allocs; // [n_leafs]
+     int n_leafs;
+@@ -575,6 +582,7 @@ void ggml_gallocr_free(ggml_gallocr_t galloc) {
+     free(galloc->buffers);
+     free(galloc->buf_tallocs);
+     free(galloc->node_allocs);
++    free(galloc->src_allocs);
+     free(galloc->leaf_allocs);
+     free(galloc);
+ }
+@@ -854,6 +862,24 @@ static bool ggml_gallocr_reserve_n_impl(
+         GGML_ASSERT(galloc->node_allocs != NULL);
+     }
+     galloc->n_nodes = graph->n_nodes;
++    size_t n_src = 0;
++    for (int i = 0; i < graph->n_nodes; i++) {
++        struct node_alloc * node_alloc = &galloc->node_allocs[i];
++        node_alloc->src = n_src;
++        node_alloc->src_mask = 0;
++        for (int j = 0; j < GGML_MAX_SRC; j++) {
++            if (graph->nodes[i]->src[j]) {
++                node_alloc->src_mask |= 1u << j;
++                n_src++;
++            }
++        }
++    }
++    if (galloc->src_capacity < n_src) {
++        free(galloc->src_allocs);
++        galloc->src_allocs = malloc(n_src * sizeof(struct tensor_alloc));
++        GGML_ASSERT(galloc->src_allocs != NULL);
++        galloc->src_capacity = n_src;
++    }
+     for (int i = 0; i < graph->n_nodes; i++) {
+         struct ggml_tensor * node = graph->nodes[i];
+         struct node_alloc * node_alloc = &galloc->node_allocs[i];
+@@ -867,17 +893,22 @@ static bool ggml_gallocr_reserve_n_impl(
+             node_alloc->dst.addr = hn->addr;
+             node_alloc->dst.size_max  = ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], node);
+         }
++        size_t src_index = node_alloc->src;
+         for (int j = 0; j < GGML_MAX_SRC; j++) {
+             struct ggml_tensor * src = node->src[j];
+-            if (!src || src->view_src || src->data) {
+-                node_alloc->src[j].buffer_id = -1;
+-                node_alloc->src[j].addr = GGML_BUFFER_ADDRESS_INVALID;
+-                node_alloc->src[j].size_max = 0;
++            if (!src) {
++                continue;
++            }
++            struct tensor_alloc * src_alloc = &galloc->src_allocs[src_index++];
++            if (src->view_src || src->data) {
++                src_alloc->buffer_id = -1;
++                src_alloc->addr = GGML_BUFFER_ADDRESS_INVALID;
++                src_alloc->size_max = 0;
+             } else {
+                 struct hash_node * hn = ggml_gallocr_hash_get(galloc, src);
+-                node_alloc->src[j].buffer_id = hn->buffer_id;
+-                node_alloc->src[j].addr = hn->addr;
+-                node_alloc->src[j].size_max = ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], src);
++                src_alloc->buffer_id = hn->buffer_id;
++                src_alloc->addr = hn->addr;
++                src_alloc->size_max = ggml_backend_buft_get_alloc_size(galloc->bufts[hn->buffer_id], src);
+             }
+         }
+     }
+@@ -1032,12 +1063,16 @@ static bool ggml_gallocr_needs_realloc(ggml_gallocr_t galloc, struct ggml_cgraph
+             return true;
+         }
+ 
++        size_t src_index = node_alloc->src;
+         for (int j = 0; j < GGML_MAX_SRC; j++) {
+             struct ggml_tensor * src = node->src[j];
++            if ((src != NULL) != ((node_alloc->src_mask & (1u << j)) != 0)) {
++                return true;
++            }
+             if (src == NULL) {
+                 continue;
+             }
+-            if (!ggml_gallocr_node_needs_realloc(galloc, src, &node_alloc->src[j])) {
++            if (!ggml_gallocr_node_needs_realloc(galloc, src, &galloc->src_allocs[src_index++])) {
+ #ifndef NDEBUG
+                 GGML_LOG_DEBUG("%s: src %d (%s) of node %s is not valid\n", __func__, j, src->name, node->name);
+ #endif
+@@ -1084,12 +1119,13 @@ bool ggml_gallocr_alloc_graph(ggml_gallocr_t galloc, struct ggml_cgraph * graph)
+     for (int i = 0; i < graph->n_nodes; i++) {
+         struct ggml_tensor * node = graph->nodes[i];
+         struct node_alloc * node_alloc = &galloc->node_allocs[i];
++        size_t src_index = node_alloc->src;
+         for (int j = 0; j < GGML_MAX_SRC; j++) {
+             struct ggml_tensor * src = node->src[j];
+             if (src == NULL) {
+                 continue;
+             }
+-            ggml_gallocr_init_tensor(galloc, src, &node_alloc->src[j]);
++            ggml_gallocr_init_tensor(galloc, src, &galloc->src_allocs[src_index++]);
+         }
+         ggml_gallocr_init_tensor(galloc, node, &node_alloc->dst);
+     }
+diff --git a/ggml/src/ggml-backend.cpp b/ggml/src/ggml-backend.cpp
+index 20bf9650..50ee18ba 100644
+--- a/ggml/src/ggml-backend.cpp
++++ b/ggml/src/ggml-backend.cpp
+@@ -783,6 +783,13 @@ struct ggml_backend_sched_split {
+     struct ggml_cgraph graph;
+ };
+ 
++// Tensor addresses must remain stable until the next graph split. Small linked
++// arenas grow on demand without moving already-created copies or views.
++struct ggml_backend_sched_context {
++    struct ggml_context * ctx;
++    struct ggml_backend_sched_context * next;
++};
++
+ struct ggml_backend_sched {
+     bool is_reset; // true if the scheduler has been reset since the last graph split
+     bool is_alloc;
+@@ -803,6 +810,7 @@ struct ggml_backend_sched {
+ 
+     int * prev_node_backend_ids; // [graph_size]
+     int * prev_leaf_backend_ids; // [graph_size]
++    size_t backend_ids_capacity;
+ 
+     // copy of the graph with modified inputs
+     struct ggml_cgraph graph;
+@@ -821,14 +829,11 @@ struct ggml_backend_sched {
+     int n_graph_inputs;
+     int graph_inputs_capacity;
+ 
+-    struct ggml_context * ctx;
++    struct ggml_backend_sched_context * contexts;
+ 
+     ggml_backend_sched_eval_callback callback_eval;
+     void * callback_eval_user_data;
+ 
+-    char * context_buffer;
+-    size_t context_buffer_size;
+-
+     bool op_offload;
+ 
+     int debug;
+@@ -843,6 +848,37 @@ struct ggml_backend_sched {
+ #define hash_id(tensor) ggml_hash_find_or_insert(&sched->hash_set, tensor)
+ #define tensor_backend_id(tensor) sched->hv_tensor_backend_ids[hash_id(tensor)]
+ #define tensor_id_copy(id, backend_id, copy_id) sched->hv_tensor_copies[(id) * sched->n_backends * sched->n_copies + (backend_id) * sched->n_copies + (copy_id)]
++
++static void ggml_backend_sched_free_contexts(ggml_backend_sched_t sched) {
++    while (sched->contexts != nullptr) {
++        auto * arena = sched->contexts;
++        sched->contexts = arena->next;
++        ggml_free(arena->ctx);
++        free(arena);
++    }
++}
++
++static ggml_context * ggml_backend_sched_tensor_context(ggml_backend_sched_t sched) {
++    const size_t tensor_size = ggml_tensor_overhead();
++    if (sched->contexts != nullptr) {
++        auto * ctx = sched->contexts->ctx;
++        if (ggml_get_mem_size(ctx) - ggml_used_mem(ctx) >= tensor_size) {
++            return ctx;
++        }
++    }
++    auto * arena = (ggml_backend_sched_context *) malloc(sizeof(ggml_backend_sched_context));
++    GGML_ASSERT(arena != nullptr);
++    struct ggml_init_params params = {
++        /* .mem_size   = */ 128 * tensor_size,
++        /* .mem_buffer = */ nullptr,
++        /* .no_alloc   = */ true,
++    };
++    arena->ctx = ggml_init(params);
++    GGML_ASSERT(arena->ctx != nullptr);
++    arena->next = sched->contexts;
++    sched->contexts = arena;
++    return arena->ctx;
++}
+ #define tensor_copy(tensor, backend_id, copy_id) tensor_id_copy(hash_id(tensor), backend_id, copy_id)
+ 
+ static void ggml_backend_sched_split_inputs_grow(struct ggml_backend_sched_split * split) {
+@@ -1069,18 +1105,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+     sched->n_graph_inputs = 0;
+     sched->is_reset = false;
+ 
+-    struct ggml_init_params params = {
+-        /* .mem_size =   */ sched->context_buffer_size,
+-        /* .mem_buffer = */ sched->context_buffer,
+-        /* .no_alloc =   */ true
+-    };
+-
+-    ggml_free(sched->ctx);
+-
+-    sched->ctx = ggml_init(params);
+-    if (sched->ctx == NULL) {
+-        GGML_ABORT("%s: failed to initialize context\n", __func__);
+-    }
++    ggml_backend_sched_free_contexts(sched);
+ 
+     graph->uid = ggml_graph_next_uid();
+ 
+@@ -1380,7 +1405,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+                             if (c == sched->cur_copy) {
+                                 tensor_copy = src; // use the original tensor as the current copy
+                             } else {
+-                                tensor_copy = ggml_dup_tensor_layout(sched->ctx, src);
++                                tensor_copy = ggml_dup_tensor_layout(ggml_backend_sched_tensor_context(sched), src);
+                                 ggml_format_name(tensor_copy, "%s#%s#%d", ggml_backend_name(backend), src->name, c);
+                             }
+                             ggml_set_input(tensor_copy);
+@@ -1401,7 +1426,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+                     if (tensor_id_copy(src_id, cur_backend_id, 0) == NULL) {
+                         ggml_backend_t backend = sched->backends[cur_backend_id];
+                         for (int c = 0; c < sched->n_copies; c++) {
+-                            struct ggml_tensor * tensor_copy = ggml_dup_tensor_layout(sched->ctx, src);
++                            struct ggml_tensor * tensor_copy = ggml_dup_tensor_layout(ggml_backend_sched_tensor_context(sched), src);
+                             ggml_format_name(tensor_copy, "%s#%s#%d", ggml_backend_name(backend), src->name, c);
+                             if (sched->n_copies > 1) {
+                                 ggml_set_input(tensor_copy);
+@@ -1474,6 +1499,20 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+     }
+     int graph_size = std::max(graph->n_nodes, graph->n_leafs) + total_inputs * 2 * sched->n_copies + n_dep_nodes;
+ 
++    // Keep both generations for allocation-change detection, sized to the
++    // actual expanded graph rather than graph_capacity * max_split_inputs.
++    if (sched->backend_ids_capacity < (size_t) graph_size) {
++        int ** arrays[] = { &sched->node_backend_ids, &sched->leaf_backend_ids,
++                            &sched->prev_node_backend_ids, &sched->prev_leaf_backend_ids };
++        for (auto ** ids : arrays) {
++            *ids = (int *) realloc(*ids, (size_t) graph_size * sizeof(int));
++            GGML_ASSERT(*ids != nullptr);
++            memset(*ids + sched->backend_ids_capacity, 0,
++                   ((size_t) graph_size - sched->backend_ids_capacity) * sizeof(int));
++        }
++        sched->backend_ids_capacity = graph_size;
++    }
++
+     // remember the actual graph_size for performing reallocation checks later [GGML_SCHED_DEBUG_REALLOC]
+     sched->debug_prev_graph_size = sched->debug_graph_size;
+     sched->debug_graph_size = graph_size;
+@@ -1504,7 +1543,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+             struct ggml_tensor * input_cpy = tensor_id_copy(input_id, split->backend_id, sched->cur_copy);
+ 
+             // add a dependency to the input source so that it is not freed before the copy is done
+-            struct ggml_tensor * input_dep = ggml_view_tensor(sched->ctx, input);
++            struct ggml_tensor * input_dep = ggml_view_tensor(ggml_backend_sched_tensor_context(sched), input);
+             input_dep->src[0] = input;
+             sched->node_backend_ids[graph_copy->n_nodes] = sched->hv_tensor_backend_ids[input_id];
+             graph_copy->nodes[graph_copy->n_nodes++] = input_dep;
+@@ -1528,7 +1567,7 @@ void ggml_backend_sched_split_graph(ggml_backend_sched_t sched, struct ggml_cgra
+             if (it != alloc_deps.end()) {
+                 const std::vector<ggml_tensor *> & keep = it->second;
+                 for (size_t k = 0; k < keep.size(); k += GGML_MAX_SRC) {
+-                    struct ggml_tensor * dep = ggml_view_tensor(sched->ctx, keep[k]);
++                    struct ggml_tensor * dep = ggml_view_tensor(ggml_backend_sched_tensor_context(sched), keep[k]);
+                     for (size_t s = 0; s < GGML_MAX_SRC && k + s < keep.size(); s++) {
+                         dep->src[s] = keep[k + s];
+                     }
+@@ -1877,19 +1916,9 @@ ggml_backend_sched_t ggml_backend_sched_new(
+     sched->hv_tensor_backend_ids = (int *) malloc(sched->hash_set.size * sizeof(sched->hv_tensor_backend_ids[0]));
+     sched->hv_tensor_copies      = (ggml_tensor **) malloc(sched->hash_set.size * sched->n_backends * sched->n_copies * sizeof(struct ggml_tensor *));
+ 
+-    const size_t ggml_sched_max_splits = graph_size; // at most there is one split for each node in the graph
+-    const size_t nodes_size = graph_size + ggml_sched_max_splits*GGML_SCHED_MAX_SPLIT_INPUTS*2;
+-    sched->node_backend_ids = (int *) calloc(nodes_size, sizeof(sched->node_backend_ids[0]));
+-    sched->leaf_backend_ids = (int *) calloc(nodes_size, sizeof(sched->leaf_backend_ids[0]));
+-    sched->prev_node_backend_ids = (int *) calloc(nodes_size, sizeof(sched->prev_node_backend_ids[0]));
+-    sched->prev_leaf_backend_ids = (int *) calloc(nodes_size, sizeof(sched->prev_leaf_backend_ids[0]));
+-
+     sched->debug_graph_size = 0;
+     sched->debug_prev_graph_size = 0;
+ 
+-    sched->context_buffer_size = ggml_sched_max_splits*GGML_SCHED_MAX_SPLIT_INPUTS*2*sizeof(struct ggml_tensor) + ggml_graph_overhead_custom(graph_size, false);
+-    sched->context_buffer = (char *) malloc(sched->context_buffer_size);
+-
+     const int initial_splits_capacity = 16;
+     sched->splits = (ggml_backend_sched_split *) calloc(initial_splits_capacity, sizeof(sched->splits[0]));
+     sched->splits_capacity = initial_splits_capacity;
+@@ -1927,7 +1956,7 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
+         }
+     }
+     ggml_gallocr_free(sched->galloc);
+-    ggml_free(sched->ctx);
++    ggml_backend_sched_free_contexts(sched);
+     ggml_hash_set_free(&sched->hash_set);
+     for (int i = 0; i < sched->splits_capacity; i++) {
+         free(sched->splits[i].inputs);
+@@ -1940,7 +1969,6 @@ void ggml_backend_sched_free(ggml_backend_sched_t sched) {
+     free(sched->leaf_backend_ids);
+     free(sched->prev_node_backend_ids);
+     free(sched->prev_leaf_backend_ids);
+-    free(sched->context_buffer);
+     free(sched->graph.nodes);
+     free(sched->graph.leafs);
+     free(sched);
+diff --git a/ggml/src/ggml-vulkan/ggml-vulkan.cpp b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+index ded65419..6dff7a0d 100644
+--- a/ggml/src/ggml-vulkan/ggml-vulkan.cpp
++++ b/ggml/src/ggml-vulkan/ggml-vulkan.cpp
+@@ -1,4 +1,8 @@
+ #include "ggml-vulkan-common.h"
++#ifdef _WIN32
++#include <compressapi.h>
++#pragma comment(lib, "cabinet")
++#endif
+ 
+ namespace {
+ inline std::ostream & operator<<(std::ostream & os, vk::Buffer buffer) {
+@@ -344,35 +348,12 @@ void ggml_vk_wait_for_fence(ggml_backend_vk_context * ctx) {
+         ctx->almost_ready_fence_pending = false;
+     }
+ 
+-    // Spin (w/pause) waiting for the graph to finish executing.
+-    vk::Result result;
+-    for (;;) {
+-        try {
+-            result = ctx->device->device.getFenceStatus(ctx->fence);
+-        } catch (vk::DeviceLostError &) {
+-            ggml_vk_print_device_lost_info(ctx->device);
+-            GGML_LOG_ERROR("ggml_vulkan: getFenceStatus at %s:%d\n", __FILE__, __LINE__);
+-            throw;
+-        }
+-        if (result == vk::Result::eSuccess) {
+-            break;
+-        }
+-        if (result != vk::Result::eNotReady) {
+-            GGML_LOG_ERROR("ggml_vulkan: error %s at %s:%d\n", to_string(result).c_str(), __FILE__, __LINE__);
+-            throw vk::SystemError(vk::make_error_code(result), "ggml_vulkan: getFenceStatus");
+-        }
+-        for (uint32_t i = 0; i < 100; ++i) {
+-            YIELD();
+-            YIELD();
+-            YIELD();
+-            YIELD();
+-            YIELD();
+-            YIELD();
+-            YIELD();
+-            YIELD();
+-            YIELD();
+-            YIELD();
+-        }
++    // VTD spends the wait asleep instead of burning a CPU core until GPU completion.
++    try {
++        VK_CHECK(ctx->device->device.waitForFences({ ctx->fence }, true, UINT64_MAX), "graph_fence", ctx->device);
++    } catch (vk::DeviceLostError &) {
++        ggml_vk_print_device_lost_info(ctx->device);
++        throw;
+     }
+     ctx->device->device.resetFences({ ctx->fence });
+ }
+@@ -578,6 +559,22 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
+     GGML_ASSERT(parameter_count <= MAX_PARAMETER_COUNT);
+     GGML_ASSERT(wg_denoms[0] > 0 && wg_denoms[1] > 0 && wg_denoms[2] > 0); // NOLINT
+ 
++#ifdef _WIN32
++    DECOMPRESSOR_HANDLE handle;
++    if (!CreateDecompressor(COMPRESS_ALGORITHM_XPRESS_HUFF, nullptr, &handle)) {
++        throw std::runtime_error("Cannot create shader decompressor");
++    }
++    std::unique_ptr<std::remove_pointer_t<DECOMPRESSOR_HANDLE>, decltype(&CloseDecompressor)> decompressor(handle, CloseDecompressor);
++    uint32_t packed_size;
++    memcpy(&packed_size, spv_data, sizeof(packed_size));
++    std::vector<uint32_t> code(spv_size / sizeof(uint32_t));
++    SIZE_T unpacked_size = 0;
++    if (!Decompress(handle, static_cast<const char *>(spv_data) + sizeof(packed_size), packed_size,
++                    code.data(), spv_size, &unpacked_size) || unpacked_size != spv_size) {
++        throw std::runtime_error("Cannot decompress shader");
++    }
++    spv_data = code.data();
++#endif
+     vk::ShaderModuleCreateInfo shader_module_create_info({}, spv_size, reinterpret_cast<const uint32_t *>(spv_data));
+ 
+     // Patch SPIR-V to enable supported FP16 float controls, avoiding the need
+@@ -812,6 +809,9 @@ static void ggml_vk_create_pipeline_func(vk_device& device, vk_pipeline& pipelin
+         }
+     }
+ 
++    device->device.destroyShaderModule(pipeline->shader_module);
++    pipeline->shader_module = nullptr;
++
+     {
+         std::lock_guard<std::mutex> guard(device->compile_mutex);
+         device->all_pipelines.push_back(pipeline);
+@@ -12711,7 +12711,11 @@ void ggml_backend_vk_buffer_set_tensor(ggml_backend_buffer_t buffer, ggml_tensor
+         return;
+     }
+ 
+-    ggml_vk_buffer_write(buf, vk_tensor_offset(tensor) + tensor->view_offs + offset, data, size);
++    for (size_t done = 0; done < size; done += 1024 * 1024) {
++        const size_t count = std::min(size_t(1024 * 1024), size - done);
++        ggml_vk_buffer_write(buf, vk_tensor_offset(tensor) + tensor->view_offs + offset + done,
++                             static_cast<const uint8_t *>(data) + done, count);
++    }
+ }
+ 
+ void ggml_backend_vk_buffer_set_tensor_2d(ggml_backend_buffer_t buffer, ggml_tensor * tensor, const void * data, size_t offset,
+@@ -12738,7 +12742,11 @@ void ggml_backend_vk_buffer_get_tensor(ggml_backend_buffer_t buffer, const ggml_
+ 
+     vk_buffer buf = buf_ctx->dev_buffer;
+ 
+-    ggml_vk_buffer_read(buf, vk_tensor_offset(tensor) + tensor->view_offs + offset, data, size);
++    for (size_t done = 0; done < size; done += 1024 * 1024) {
++        const size_t count = std::min(size_t(1024 * 1024), size - done);
++        ggml_vk_buffer_read(buf, vk_tensor_offset(tensor) + tensor->view_offs + offset + done,
++                            static_cast<uint8_t *>(data) + done, count);
++    }
+ }
+ 
+ void ggml_backend_vk_buffer_get_tensor_2d(ggml_backend_buffer_t buffer, const ggml_tensor * tensor, void * data, size_t offset,
+@@ -16296,4 +16304,3 @@ void ggml_vk_debug_label::begin(vk_context & ctx, const std::string & name) {
+     subctx->debug_labels.push_back(name);
+     ggml_vk_cmd_label_begin(subctx->s->buffer->buf, subctx->debug_labels.back().c_str());
+ }
+-
+diff --git a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+index 12f9b3f5..3fc89041 100644
+--- a/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
++++ b/ggml/src/ggml-vulkan/vulkan-shaders/vulkan-shaders-gen.cpp
+@@ -24,6 +24,8 @@
+ #ifdef _WIN32
+     #define NOMINMAX
+     #include <windows.h>
++    #include <compressapi.h>
++    #pragma comment(lib, "cabinet")
+     #include <direct.h> // For _mkdir on Windows
+ #else
+     #include <unistd.h>
+@@ -1232,6 +1234,54 @@ void process_shaders() {
+     }
+ }
+ 
++#ifdef _WIN32
++void strip_shader_debug(std::string& data) {
++    if (data.size() < 20 || data.size() % sizeof(uint32_t)) {
++        throw std::runtime_error("Invalid SPIR-V size");
++    }
++    size_t output = 20;
++    for (size_t input = 20; input < data.size();) {
++        uint32_t word;
++        memcpy(&word, data.data() + input, sizeof(word));
++        const size_t bytes = size_t(word >> 16) * sizeof(word);
++        if (bytes < sizeof(word) || bytes > data.size() - input) {
++            throw std::runtime_error("Invalid SPIR-V instruction");
++        }
++        const auto op = word & 0xffff;
++        if (op < 2 || op > 6) {
++            memmove(data.data() + output, data.data() + input, bytes);
++            output += bytes;
++        }
++        input += bytes;
++    }
++    data.resize(output);
++}
++
++std::string compress_shader(const std::string& data) {
++    COMPRESSOR_HANDLE handle;
++    if (!CreateCompressor(COMPRESS_ALGORITHM_XPRESS_HUFF, nullptr, &handle)) {
++        throw std::runtime_error("Cannot create shader compressor");
++    }
++    std::unique_ptr<std::remove_pointer_t<COMPRESSOR_HANDLE>, decltype(&CloseCompressor)> compressor(handle, CloseCompressor);
++    DWORD level = 1;
++    if (!SetCompressorInformation(handle, COMPRESS_INFORMATION_CLASS_LEVEL, &level, sizeof(level))) {
++        throw std::runtime_error("Cannot set shader compression level");
++    }
++    SIZE_T size = 0;
++    if (Compress(handle, data.data(), data.size(), nullptr, 0, &size) || GetLastError() != ERROR_INSUFFICIENT_BUFFER) {
++        throw std::runtime_error("Cannot size compressed shader");
++    }
++    std::string packed(size + sizeof(uint32_t), '\0');
++    if (!Compress(handle, data.data(), data.size(), packed.data() + sizeof(uint32_t), size, &size) || size > UINT32_MAX) {
++        throw std::runtime_error("Cannot compress shader");
++    }
++    uint32_t length = static_cast<uint32_t>(size);
++    memcpy(packed.data(), &length, sizeof(length));
++    packed.resize(size + sizeof(length));
++    return packed;
++}
++#endif
++
+ void write_output_files() {
+     std::stringstream hdr = make_generic_stringstream();
+     std::stringstream src = make_generic_stringstream();
+@@ -1258,7 +1308,13 @@ void write_output_files() {
+                 continue;
+             }
+ 
++#if defined(_WIN32) && !defined(GGML_VULKAN_SHADER_DEBUG_INFO)
++            strip_shader_debug(data);
++#endif
+             src << "const uint64_t " << name << "_len = " << data.size() << ";\n";
++#ifdef _WIN32
++            data = compress_shader(data);
++#endif
+             src << "const unsigned char " << name << "_data[" << data.size() << "] = {\n" << std::hex;
+             auto bytes = reinterpret_cast<const uint8_t*>(data.data());
+             for (size_t i = 0; i < data.size(); ++i) {
+diff --git a/src/arch/canary/canary.h b/src/arch/canary/canary.h
+index 27bac011..d5969aaa 100644
+--- a/src/arch/canary/canary.h
++++ b/src/arch/canary/canary.h
+@@ -123,14 +123,15 @@ struct CanaryModel final : public transcribe_model {
+ };
+ 
+ struct CanarySession final : public transcribe_session {
+-    ggml_tensor * encoder_out = nullptr;
++    ggml_tensor *         encoder_out    = nullptr;
++    ggml_context *        encoder_ctx    = nullptr;
++    ggml_backend_buffer_t encoder_buffer = nullptr;
++
++    void clear_encoder_out() noexcept;
+ 
+     CanaryKvCache kv_cache;
+ 
+     std::vector<float> mel_buf;
+-    std::vector<float> pos_buf;
+-    std::vector<float> pos_div_term;
+-    std::vector<float> enc_host;
+ 
+     // Per-stage flash-attention controls. ggml's Metal flash kernel lacks a
+     // path for some encoder rel-pos MHSA dk values (96 for 180m-flash, 128
+diff --git a/src/arch/canary/decoder.cpp b/src/arch/canary/decoder.cpp
+index 6683cdee..ce6d23e9 100644
+--- a/src/arch/canary/decoder.cpp
++++ b/src/arch/canary/decoder.cpp
+@@ -297,7 +297,8 @@ DecoderBuild build_cross_kv_graph(ggml_context *        ctx,
+                                   const CanaryWeights & w,
+                                   const CanaryHParams & hp,
+                                   CanaryKvCache &       kv_cache,
+-                                  int                   T_enc) {
++                                  int                   T_enc,
++                                  ggml_tensor *         encoder_out) {
+     DecoderBuild db{};
+ 
+     if (ctx == nullptr || T_enc <= 0) {
+@@ -308,9 +309,12 @@ DecoderBuild build_cross_kv_graph(ggml_context *        ctx,
+ 
+     const int64_t hidden = hp.dec_d_model;
+ 
+-    db.encoder_out_in = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hidden, T_enc);
+-    ggml_set_name(db.encoder_out_in, "dec.encoder_out");
+-    ggml_set_input(db.encoder_out_in);
++    db.encoder_out_in = encoder_out;
++    if (db.encoder_out_in == nullptr) {
++        db.encoder_out_in = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, hidden, T_enc);
++        ggml_set_name(db.encoder_out_in, "dec.encoder_out");
++        ggml_set_input(db.encoder_out_in);
++    }
+ 
+     db.graph = ggml_new_graph_custom(ctx, 4096, false);
+     if (db.graph == nullptr) {
+diff --git a/src/arch/canary/decoder.h b/src/arch/canary/decoder.h
+index b0ff3539..894eb24d 100644
+--- a/src/arch/canary/decoder.h
++++ b/src/arch/canary/decoder.h
+@@ -52,7 +52,8 @@ DecoderBuild build_cross_kv_graph(ggml_context *        ctx,
+                                   const CanaryWeights & w,
+                                   const CanaryHParams & hp,
+                                   CanaryKvCache &       kv_cache,
+-                                  int                   T_enc);
++                                  int                   T_enc,
++                                  ggml_tensor *         encoder_out = nullptr);
+ 
+ // Build a decoder graph that uses the KV cache. Works for both prompt
+ // pass (n_tokens > 1, n_past == 0) and step pass (n_tokens == 1).
+diff --git a/src/arch/canary/model.cpp b/src/arch/canary/model.cpp
+index 3d8288ea..4e64592c 100644
+--- a/src/arch/canary/model.cpp
++++ b/src/arch/canary/model.cpp
+@@ -5,6 +5,7 @@
+ // Transformer decoder, driven by a 4/5-slot multitask prompt.
+ 
+ #include "canary.h"
++#include "conformer/conformer.h"
+ #include "decoder.h"
+ #include "encoder.h"
+ #include "ggml-alloc.h"
+@@ -47,12 +48,22 @@ static_assert(std::is_base_of_v<transcribe_model, CanaryModel>);
+ static_assert(std::is_base_of_v<transcribe_session, CanarySession>);
+ 
+ CanarySession::~CanarySession() {
+-    kv_cache.free();
++    release_scratch();
++}
++
++void CanarySession::clear_encoder_out() noexcept {
++    encoder_out = nullptr;
++    safe_buffer_free(encoder_buffer);
++    encoder_buffer = nullptr;
++    ggml_free(encoder_ctx);
++    encoder_ctx = nullptr;
+ }
+ 
+ // Base release_scratch has freed sched/compute_ctx; drop what pointed into them.
+ void CanarySession::on_scratch_released() noexcept {
+-    encoder_out = nullptr;
++    clear_encoder_out();
++    kv_cache.free();
++    std::vector<float>().swap(mel_buf);
+ }
+ 
+ bool kv_cache_init(CanaryKvCache & cache,
+@@ -861,40 +872,24 @@ transcribe_status run(transcribe_session *          session,
+         }
+     }
+     ggml_backend_sched_reset(cc->sched);
++    ggml_backend_sched_set_tensor_backend(cc->sched, eb.mel_in, cm->plan.primary);
++    if (eb.pos_emb_in != nullptr) {
++        ggml_backend_sched_set_tensor_backend(cc->sched, eb.pos_emb_in, cm->plan.primary);
++    }
+     if (!ggml_backend_sched_alloc_graph(cc->sched, eb.graph)) {
+         transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "canary run: encoder graph allocation failed — out of memory.");
+         return TRANSCRIBE_ERR_OOM;
+     }
+ 
+     ggml_backend_tensor_set(eb.mel_in, cc->mel_buf.data(), 0, cc->mel_buf.size() * sizeof(float));
++    std::vector<float>().swap(cc->mel_buf);
+     transcribe::debug::dump_tensor("enc.mel.in", eb.mel_in, "encoder.mel");
+ 
+     // Sinusoidal relative positional embedding.
+     if (eb.pos_emb_in != nullptr) {
+-        const int d_model = cm->hparams.enc_d_model;
+         const int pos_len = static_cast<int>(eb.pos_emb_in->ne[1]);
+         const int T_enc   = (pos_len + 1) / 2;
+-
+-        cc->pos_buf.assign(static_cast<size_t>(pos_len) * d_model, 0.0f);
+-
+-        cc->pos_div_term.resize(static_cast<size_t>(d_model / 2));
+-        const float ln_10000 = std::log(10000.0f);
+-        for (int k = 0; k < d_model / 2; ++k) {
+-            cc->pos_div_term[static_cast<size_t>(k)] =
+-                std::exp(static_cast<float>(2 * k) * (-ln_10000 / static_cast<float>(d_model)));
+-        }
+-
+-        for (int i = 0; i < pos_len; ++i) {
+-            const float pos = static_cast<float>((T_enc - 1) - i);
+-            float *     row = cc->pos_buf.data() + static_cast<size_t>(i) * d_model;
+-            for (int k = 0; k < d_model / 2; ++k) {
+-                const float div = cc->pos_div_term[static_cast<size_t>(k)];
+-                row[2 * k]      = std::sin(pos * div);
+-                row[2 * k + 1]  = std::cos(pos * div);
+-            }
+-        }
+-
+-        ggml_backend_tensor_set(eb.pos_emb_in, cc->pos_buf.data(), 0, cc->pos_buf.size() * sizeof(float));
++        transcribe::conformer::set_relative_positions(eb.pos_emb_in, T_enc - 1);
+         transcribe::debug::dump_tensor("enc.pos_emb", eb.pos_emb_in, "encoder.pos_emb");
+     }
+ 
+@@ -933,17 +928,23 @@ transcribe_status run(transcribe_session *          session,
+     try_dump("enc.native", eb.dumps.native_out, "encoder.native_out");
+     try_dump("enc.final", eb.dumps.final_out, "encoder.final");
+ 
+-    cc->encoder_out = eb.out;
+-
+-    // Pull encoder output to host so the cross-attn graph can consume it.
++    // Keep the encoder result on its backend across scheduler/graph resets.
+     const int d_dec = static_cast<int>(eb.out->ne[0]);
+     const int T_enc = static_cast<int>(eb.out->ne[1]);
+     if (d_dec <= 0 || T_enc <= 0) {
+         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "canary run: encoder output has degenerate shape [%d, %d]", d_dec, T_enc);
+         return TRANSCRIBE_ERR_GGUF;
+     }
+-    cc->enc_host.resize(static_cast<size_t>(d_dec) * static_cast<size_t>(T_enc));
+-    ggml_backend_tensor_get(eb.out, cc->enc_host.data(), 0, cc->enc_host.size() * sizeof(float));
++    cc->encoder_ctx = ggml_init({ ggml_tensor_overhead(), nullptr, true });
++    if (cc->encoder_ctx == nullptr) {
++        return TRANSCRIBE_ERR_OOM;
++    }
++    cc->encoder_out    = ggml_dup_tensor(cc->encoder_ctx, eb.out);
++    cc->encoder_buffer = ggml_backend_alloc_ctx_tensors(cc->encoder_ctx, cm->plan.primary);
++    if (cc->encoder_buffer == nullptr) {
++        return TRANSCRIBE_ERR_OOM;
++    }
++    ggml_backend_tensor_copy(eb.out, cc->encoder_out);
+ 
+     // Build multitask prompt.
+     const char * lang         = (params && params->language) ? params->language : "en";
+@@ -1054,7 +1055,6 @@ transcribe_status run(transcribe_session *          session,
+             ggml_free(cc->compute_ctx);
+             cc->compute_ctx = nullptr;
+         }
+-        cc->encoder_out = nullptr;
+         ggml_init_params ip{};
+         ip.mem_size     = mem_size;
+         ip.mem_buffer   = nullptr;
+@@ -1083,7 +1083,8 @@ transcribe_status run(transcribe_session *          session,
+             return TRANSCRIBE_ERR_OOM;
+         }
+ 
+-        DecoderBuild cross_db = build_cross_kv_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, T_enc);
++        DecoderBuild cross_db =
++            build_cross_kv_graph(cc->compute_ctx, cm->weights, cm->hparams, cc->kv_cache, T_enc, cc->encoder_out);
+         if (cross_db.graph == nullptr) {
+             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "canary run: build_cross_kv_graph failed");
+             return TRANSCRIBE_ERR_GGUF;
+@@ -1096,8 +1097,6 @@ transcribe_status run(transcribe_session *          session,
+             return TRANSCRIBE_ERR_OOM;
+         }
+ 
+-        ggml_backend_tensor_set(cross_db.encoder_out_in, cc->enc_host.data(), 0, cc->enc_host.size() * sizeof(float));
+-
+         if (const ggml_status gs = ggml_backend_sched_graph_compute(cc->sched, cross_db.graph);
+             gs != GGML_STATUS_SUCCESS) {
+             log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "canary run: cross_kv compute failed (%d)", static_cast<int>(gs));
+@@ -1128,6 +1127,7 @@ transcribe_status run(transcribe_session *          session,
+         }
+ 
+         ggml_backend_sched_reset(cc->sched);
++        cc->clear_encoder_out();
+         if (!ggml_backend_sched_alloc_graph(cc->sched, db.graph)) {
+             transcribe::log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                                 "canary run: decoder-prompt graph allocation failed — "
+@@ -1547,24 +1547,9 @@ transcribe_status encode_one_to_host(CanarySession *            cc,
+     ggml_backend_tensor_set(eb.mel_in, mel_buf.data(), 0, mel_buf.size() * sizeof(float));
+ 
+     if (eb.pos_emb_in != nullptr) {
+-        const int          d_model = cm->hparams.enc_d_model;
+-        const int          pos_len = static_cast<int>(eb.pos_emb_in->ne[1]);
+-        const int          T_enc   = (pos_len + 1) / 2;
+-        std::vector<float> pos_buf(static_cast<size_t>(pos_len) * d_model, 0.0f);
+-        const float        ln_10000 = std::log(10000.0f);
+-        std::vector<float> div_term(static_cast<size_t>(d_model / 2));
+-        for (int k = 0; k < d_model / 2; ++k) {
+-            div_term[k] = std::exp(static_cast<float>(2 * k) * (-ln_10000 / static_cast<float>(d_model)));
+-        }
+-        for (int i = 0; i < pos_len; ++i) {
+-            const float p   = static_cast<float>((T_enc - 1) - i);
+-            float *     row = pos_buf.data() + static_cast<size_t>(i) * d_model;
+-            for (int k = 0; k < d_model / 2; ++k) {
+-                row[2 * k]     = std::sin(p * div_term[k]);
+-                row[2 * k + 1] = std::cos(p * div_term[k]);
+-            }
+-        }
+-        ggml_backend_tensor_set(eb.pos_emb_in, pos_buf.data(), 0, pos_buf.size() * sizeof(float));
++        const int pos_len = static_cast<int>(eb.pos_emb_in->ne[1]);
++        const int T_enc   = (pos_len + 1) / 2;
++        transcribe::conformer::set_relative_positions(eb.pos_emb_in, T_enc - 1);
+     }
+ 
+     transcribe::configure_sched_n_threads(cc->sched, cc->n_threads);
+diff --git a/src/arch/parakeet/decoder.cpp b/src/arch/parakeet/decoder.cpp
+index c52f295a..85eb45f4 100644
+--- a/src/arch/parakeet/decoder.cpp
++++ b/src/arch/parakeet/decoder.cpp
+@@ -19,6 +19,10 @@
+ #include "transcribe-log.h"
+ #include "weights.h"
+ 
++#ifdef VTD_EXACT_Q8_MATVEC
++#    include "exact_matvec.h"
++#endif
++
+ // ggml-backend.h, not ggml-cpu.h: under GGML_BACKEND_DL the CPU backend
+ // is a loadable module, so backend-specific entry points must be reached
+ // through the registry (ggml_backend_init_by_type / get_proc_address),
+@@ -60,7 +64,7 @@ namespace {
+ // Q*/IQ*). ggml_backend_tensor_get is universal (memcpy on host buffers,
+ // readback on discrete GPUs); we stage the raw bytes then materialize
+ // fp32 in `out`. Returns false on missing-trait / size errors.
+-bool read_tensor_to_f32(const ggml_tensor * t, std::vector<float> & out) {
++bool read_tensor_to_f32(const ggml_tensor * t, float * out, size_t capacity) {
+     if (t == nullptr) {
+         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: read_tensor_to_f32: null tensor");
+         return false;
+@@ -77,7 +81,10 @@ bool read_tensor_to_f32(const ggml_tensor * t, std::vector<float> & out) {
+         return false;
+     }
+ 
+-    out.resize(static_cast<size_t>(nelem));
++    if (static_cast<size_t>(nelem) != capacity || out == nullptr) {
++        log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: tensor \"%s\" size mismatch", t->name);
++        return false;
++    }
+ 
+     // F32 fast path. type_traits[GGML_TYPE_F32] has no to_float (identity
+     // is left null upstream), so short-circuit rather than dispatch.
+@@ -89,7 +96,10 @@ bool read_tensor_to_f32(const ggml_tensor * t, std::vector<float> & out) {
+                     t->name, nbytes, static_cast<size_t>(nelem) * sizeof(float));
+             return false;
+         }
+-        ggml_backend_tensor_get(t, out.data(), 0, nbytes);
++        for (size_t offset = 0; offset < nbytes; offset += 1024 * 1024) {
++            const size_t size = std::min(size_t(1024 * 1024), nbytes - offset);
++            ggml_backend_tensor_get(t, reinterpret_cast<uint8_t *>(out) + offset, offset, size);
++        }
+         return true;
+     }
+ 
+@@ -102,18 +112,72 @@ bool read_tensor_to_f32(const ggml_tensor * t, std::vector<float> & out) {
+         return false;
+     }
+ 
+-    std::vector<uint8_t> raw(nbytes);
+-    ggml_backend_tensor_get(t, raw.data(), 0, nbytes);
+-    tt->to_float(raw.data(), out.data(), nelem);
++    const size_t  block_bytes    = ggml_type_size(t->type);
++    const int64_t block_elements = ggml_blck_size(t->type);
++    const size_t  chunk_bytes = std::min(nbytes, std::max(size_t(1), size_t(1024 * 1024) / block_bytes) * block_bytes);
++    std::vector<uint8_t> raw(chunk_bytes);
++    for (size_t offset = 0; offset < nbytes; offset += chunk_bytes) {
++        const size_t  size  = std::min(chunk_bytes, nbytes - offset);
++        const int64_t count = static_cast<int64_t>(size / block_bytes) * block_elements;
++        const int64_t start = static_cast<int64_t>(offset / block_bytes) * block_elements;
++        ggml_backend_tensor_get(t, raw.data(), offset, size);
++        tt->to_float(raw.data(), out + start, count);
++    }
+     return true;
+ }
+ 
+-// Make the joint network's weights resident as fp32 ggml tensors on the
+-// model: enc / pred / out projections. Built once at load. out_w is
+-// dequantized from the model tensor src_out_w; the rest come from the
+-// host mirrors, freed here once uploaded. On failure frees partial state
+-// and returns false (w_ready stays false → hard decode error).
+-bool build_joint_weight(HostJoint & j, const ggml_tensor * src_out_w) {
++bool read_tensor_to_f32(const ggml_tensor * t, std::vector<float> & out) {
++    if (t == nullptr || ggml_nelements(t) <= 0) {
++        return false;
++    }
++    out.resize(static_cast<size_t>(ggml_nelements(t)));
++    return read_tensor_to_f32(t, out.data(), out.size());
++}
++
++// Fill the final CPU allocation without a second complete fp32 tensor.
++bool copy_host_weight(const ggml_tensor * source, ggml_tensor * target) {
++    if (source == nullptr || target == nullptr || target->buffer == nullptr ||
++        !ggml_backend_buffer_is_host(target->buffer)) {
++        return false;
++    }
++    if (source->type == target->type && ggml_nelements(source) == ggml_nelements(target) &&
++        ggml_nbytes(source) == ggml_nbytes(target)) {
++        const size_t bytes = ggml_nbytes(source);
++        for (size_t offset = 0; offset < bytes; offset += 1024 * 1024) {
++            const size_t size = std::min(size_t(1024 * 1024), bytes - offset);
++            ggml_backend_tensor_get(source, static_cast<uint8_t *>(target->data) + offset, offset, size);
++        }
++        return true;
++    }
++    if (target->type != GGML_TYPE_F32) {
++        return false;
++    }
++    return read_tensor_to_f32(source, static_cast<float *>(target->data), static_cast<size_t>(ggml_nelements(target)));
++}
++
++ggml_type host_matvec_type(const ggml_tensor * source) {
++#ifdef VTD_EXACT_Q8_MATVEC
++    if (vtd_exact_q8_supported(source)) {
++        return GGML_TYPE_Q8_0;
++    }
++#else
++    (void) source;
++#endif
++    return GGML_TYPE_F32;
++}
++
++ggml_tensor * host_matvec(ggml_context * ctx, ggml_tensor * weights, ggml_tensor * input) {
++#ifdef VTD_EXACT_Q8_MATVEC
++    if (weights->type == GGML_TYPE_Q8_0) {
++        return vtd_exact_q8_mul_mat(ctx, weights, input);
++    }
++#endif
++    return ggml_mul_mat(ctx, weights, input);
++}
++
++// Load straight into the resident CPU allocations. Single-vector projections
++// retain original Q8_0 when the exact matvec is available; GEMM stays fp32.
++bool build_joint_weight(HostJoint & j, const ParakeetJoint & source) {
+     const int joint_h = j.joint_h;
+     const int joint_n = j.joint_n;
+ 
+@@ -159,9 +223,9 @@ bool build_joint_weight(HostJoint & j, const ggml_tensor * src_out_w) {
+ 
+     j.g_enc_w  = ggml_new_tensor_2d(j.w_ctx, GGML_TYPE_F32, j.d_enc, joint_h);
+     j.g_enc_b  = ggml_new_tensor_1d(j.w_ctx, GGML_TYPE_F32, joint_h);
+-    j.g_pred_w = ggml_new_tensor_2d(j.w_ctx, GGML_TYPE_F32, j.pred_hidden, joint_h);
++    j.g_pred_w = ggml_new_tensor_2d(j.w_ctx, host_matvec_type(source.pred_w), j.pred_hidden, joint_h);
+     j.g_pred_b = ggml_new_tensor_1d(j.w_ctx, GGML_TYPE_F32, joint_h);
+-    j.gw_w     = ggml_new_tensor_2d(j.w_ctx, GGML_TYPE_F32, joint_h, joint_n);
++    j.gw_w     = ggml_new_tensor_2d(j.w_ctx, host_matvec_type(source.out_w), joint_h, joint_n);
+     j.gw_b     = ggml_new_tensor_1d(j.w_ctx, GGML_TYPE_F32, joint_n);
+ 
+     j.w_buf = ggml_backend_alloc_ctx_tensors(j.w_ctx, j.w_backend);
+@@ -169,42 +233,27 @@ bool build_joint_weight(HostJoint & j, const ggml_tensor * src_out_w) {
+         return fail();
+     }
+ 
+-    // out_w: dequantize the model tensor to fp32 once.
+-    {
+-        std::vector<float> tmp;
+-        if (!read_tensor_to_f32(src_out_w, tmp)) {
+-            return fail();
+-        }
+-        ggml_backend_tensor_set(j.gw_w, tmp.data(), 0, tmp.size() * sizeof(float));
+-    }
+-    // The rest come from the host mirrors.
+-    ggml_backend_tensor_set(j.g_enc_w, j.enc_w.data(), 0, j.enc_w.size() * sizeof(float));
+-    ggml_backend_tensor_set(j.g_enc_b, j.enc_b.data(), 0, j.enc_b.size() * sizeof(float));
+-    ggml_backend_tensor_set(j.g_pred_w, j.pred_w.data(), 0, j.pred_w.size() * sizeof(float));
+-    ggml_backend_tensor_set(j.g_pred_b, j.pred_b.data(), 0, j.pred_b.size() * sizeof(float));
+-    ggml_backend_tensor_set(j.gw_b, j.out_b.data(), 0, j.out_b.size() * sizeof(float));
+-
+-    // Host mirrors are now resident in ggml — release them (load-time scratch).
+-    std::vector<float>().swap(j.enc_w);
+-    std::vector<float>().swap(j.enc_b);
+-    std::vector<float>().swap(j.pred_w);
+-    std::vector<float>().swap(j.pred_b);
+-    std::vector<float>().swap(j.out_b);
++    // Copy directly into the resident encoding, with bounded GPU readback.
++    if (!copy_host_weight(source.enc_w, j.g_enc_w) || !copy_host_weight(source.enc_b, j.g_enc_b) ||
++        !copy_host_weight(source.pred_w, j.g_pred_w) || !copy_host_weight(source.pred_b, j.g_pred_b) ||
++        !copy_host_weight(source.out_w, j.gw_w) || !copy_host_weight(source.out_b, j.gw_b)) {
++        return fail();
++    }
+ 
+     j.w_ready = true;
+     return true;
+ }
+ 
+-// Make the predictor LSTM weights resident as fp32 ggml tensors for the
++// Make the predictor LSTM weights resident as CPU ggml tensors for the
+ // per-call PredGraph. Built once at load. ne is [pred_hidden, 4*pred_hidden]
+ // for Wx/Wh (row-major [4*H, H] host bytes as a mul_mat operand) and
+ // [4*pred_hidden] for the bias. On failure frees partial state and returns
+ // false (lstm_ready stays false → hard decode error).
+-bool build_pred_weights(HostPredictor & p) {
++bool build_pred_weights(HostPredictor & p, const ParakeetPredictor & source) {
+     const int H      = p.pred_hidden;
+     const int four_H = 4 * H;
+     const int L      = static_cast<int>(p.lstm.size());
+-    if (L == 0 || H == 0) {
++    if (L == 0 || H == 0 || source.lstm.size() != p.lstm.size()) {
+         return false;
+     }
+ 
+@@ -248,8 +297,8 @@ bool build_pred_weights(HostPredictor & p) {
+ 
+     for (int l = 0; l < L; ++l) {
+         auto & lh = p.lstm[l];
+-        lh.g_Wx   = ggml_new_tensor_2d(p.lstm_w_ctx, GGML_TYPE_F32, H, four_H);
+-        lh.g_Wh   = ggml_new_tensor_2d(p.lstm_w_ctx, GGML_TYPE_F32, H, four_H);
++        lh.g_Wx   = ggml_new_tensor_2d(p.lstm_w_ctx, host_matvec_type(source.lstm[l].Wx), H, four_H);
++        lh.g_Wh   = ggml_new_tensor_2d(p.lstm_w_ctx, host_matvec_type(source.lstm[l].Wh), H, four_H);
+         lh.g_b    = ggml_new_tensor_1d(p.lstm_w_ctx, GGML_TYPE_F32, four_H);
+     }
+ 
+@@ -260,13 +309,10 @@ bool build_pred_weights(HostPredictor & p) {
+ 
+     for (int l = 0; l < L; ++l) {
+         auto & lh = p.lstm[l];
+-        ggml_backend_tensor_set(lh.g_Wx, lh.Wx.data(), 0, lh.Wx.size() * sizeof(float));
+-        ggml_backend_tensor_set(lh.g_Wh, lh.Wh.data(), 0, lh.Wh.size() * sizeof(float));
+-        ggml_backend_tensor_set(lh.g_b, lh.b.data(), 0, lh.b.size() * sizeof(float));
+-        // Host mirrors now resident in ggml — release them.
+-        std::vector<float>().swap(lh.Wx);
+-        std::vector<float>().swap(lh.Wh);
+-        std::vector<float>().swap(lh.b);
++        if (!copy_host_weight(source.lstm[l].Wx, lh.g_Wx) || !copy_host_weight(source.lstm[l].Wh, lh.g_Wh) ||
++            !copy_host_weight(source.lstm[l].b, lh.g_b)) {
++            return fail();
++        }
+     }
+ 
+     p.lstm_ready = true;
+@@ -358,7 +404,7 @@ bool build_joint_graph(JointGraph & g, const HostJoint & j, ggml_backend_t backe
+     ggml_set_input(g.enc_in);
+ 
+     // pred_proj = pred_w @ pred_in + pred_b   [joint_h]
+-    ggml_tensor * pred_proj = ggml_add(g.ctx, ggml_mul_mat(g.ctx, j.g_pred_w, g.pred_in), j.g_pred_b);
++    ggml_tensor * pred_proj = ggml_add(g.ctx, host_matvec(g.ctx, j.g_pred_w, g.pred_in), j.g_pred_b);
+     // summed = enc_proj + pred_proj           [joint_h]
+     ggml_tensor * summed    = ggml_add(g.ctx, g.enc_in, pred_proj);
+     // activation — loader allow-list guarantees exactly one of relu/sigmoid/tanh.
+@@ -371,7 +417,7 @@ bool build_joint_graph(JointGraph & g, const HostJoint & j, ggml_backend_t backe
+         activated = ggml_tanh(g.ctx, summed);
+     }
+     // logits = out_w @ activated + out_b      [joint_n]
+-    ggml_tensor * mm = ggml_mul_mat(g.ctx, j.gw_w, activated);
++    ggml_tensor * mm = host_matvec(g.ctx, j.gw_w, activated);
+     g.logits         = ggml_add(g.ctx, mm, j.gw_b);
+     ggml_set_output(g.logits);
+ 
+@@ -550,7 +596,7 @@ bool build_pred_graph(PredGraph & g, const HostPredictor & p, int n_threads) {
+     for (int l = 0; l < L; ++l) {
+         const auto &  lh = p.lstm[static_cast<size_t>(l)];
+         ggml_tensor * gates =
+-            ggml_add(g.ctx, ggml_add(g.ctx, ggml_mul_mat(g.ctx, lh.g_Wx, in), ggml_mul_mat(g.ctx, lh.g_Wh, g.ph[l])),
++            ggml_add(g.ctx, ggml_add(g.ctx, host_matvec(g.ctx, lh.g_Wx, in), host_matvec(g.ctx, lh.g_Wh, g.ph[l])),
+                      lh.g_b);  // [4H]
+         auto part = [&](int k) {
+             return ggml_view_1d(g.ctx, gates, H,
+@@ -674,50 +720,32 @@ transcribe_status build_host_decoder_weights(const ParakeetModel & model, HostDe
+     out.predictor.pred_hidden = hp.pred_hidden;
+     out.predictor.pred_vocab  = hp.pred_vocab;
+ 
+-    if (!read_tensor_to_f32(w.predictor.embed_w, out.predictor.embed_w)) {
+-        return TRANSCRIBE_ERR_GGUF;
+-    }
+-    // Sanity-check the flattened size against the catalog shape.
++    // Preserve the original encoding; row-wise dequantization is bit-identical
++    // to expanding the whole embedding table and copying one fp32 row.
+     {
+-        const size_t expected = static_cast<size_t>(hp.pred_vocab) * static_cast<size_t>(hp.pred_hidden);
+-        if (out.predictor.embed_w.size() != expected) {
+-            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+-                    "parakeet decoder: pred.embed.weight size %zu "
+-                    "!= pred_vocab*pred_hidden %zu",
+-                    out.predictor.embed_w.size(), expected);
++        const auto * embedding = w.predictor.embed_w;
++        const size_t expected  = static_cast<size_t>(hp.pred_vocab) * static_cast<size_t>(hp.pred_hidden);
++        if (embedding == nullptr || ggml_nelements(embedding) != static_cast<int64_t>(expected) ||
++            hp.pred_hidden % ggml_blck_size(embedding->type) != 0) {
+             return TRANSCRIBE_ERR_GGUF;
+         }
+-    }
+-
+-    out.predictor.lstm.assign(hp.pred_n_layers, HostLstmLayer{});
+-    for (int i = 0; i < hp.pred_n_layers; ++i) {
+-        const auto & lw = w.predictor.lstm[i];
+-        auto &       lh = out.predictor.lstm[i];
+-        if (!read_tensor_to_f32(lw.Wx, lh.Wx)) {
+-            return TRANSCRIBE_ERR_GGUF;
+-        }
+-        if (!read_tensor_to_f32(lw.Wh, lh.Wh)) {
+-            return TRANSCRIBE_ERR_GGUF;
+-        }
+-        if (!read_tensor_to_f32(lw.b, lh.b)) {
+-            return TRANSCRIBE_ERR_GGUF;
+-        }
+-
+-        const size_t gates    = static_cast<size_t>(4 * hp.pred_hidden);
+-        const size_t mat_size = gates * static_cast<size_t>(hp.pred_hidden);
+-        if (lh.Wx.size() != mat_size || lh.Wh.size() != mat_size) {
+-            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: pred.lstm.%d Wx/Wh wrong size", i);
++        const auto * traits = ggml_get_type_traits(embedding->type);
++        if (embedding->type != GGML_TYPE_F32 && (traits == nullptr || traits->to_float == nullptr)) {
+             return TRANSCRIBE_ERR_GGUF;
+         }
+-        if (lh.b.size() != gates) {
+-            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: pred.lstm.%d bias wrong size", i);
+-            return TRANSCRIBE_ERR_GGUF;
++        out.predictor.embed_type = embedding->type;
++        out.predictor.embed_w.resize(ggml_nbytes(embedding));
++        for (size_t offset = 0; offset < out.predictor.embed_w.size(); offset += 1024 * 1024) {
++            const size_t size = std::min(size_t(1024 * 1024), out.predictor.embed_w.size() - offset);
++            ggml_backend_tensor_get(embedding, out.predictor.embed_w.data() + offset, offset, size);
+         }
+     }
+ 
++    out.predictor.lstm.assign(hp.pred_n_layers, HostLstmLayer{});
++
+     // Make the predictor LSTM weights resident. Fatal: a failure means
+     // the model cannot decode — fail fast at load.
+-    if (!build_pred_weights(out.predictor)) {
++    if (!build_pred_weights(out.predictor, w.predictor)) {
+         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: predictor ggml weight build failed");
+         return TRANSCRIBE_ERR_BACKEND;
+     }
+@@ -729,25 +757,7 @@ transcribe_status build_host_decoder_weights(const ParakeetModel & model, HostDe
+     out.joint.joint_n     = hp.joint_n_classes();
+     out.joint.activation  = hp.joint_activation;
+ 
+-    // enc/pred/out_b are mirrored to host fp32; out_w is NOT mirrored
+-    // here (build_joint_weight dequantizes it from the model tensor).
+-    if (!read_tensor_to_f32(w.joint.enc_w, out.joint.enc_w)) {
+-        return TRANSCRIBE_ERR_GGUF;
+-    }
+-    if (!read_tensor_to_f32(w.joint.enc_b, out.joint.enc_b)) {
+-        return TRANSCRIBE_ERR_GGUF;
+-    }
+-    if (!read_tensor_to_f32(w.joint.pred_w, out.joint.pred_w)) {
+-        return TRANSCRIBE_ERR_GGUF;
+-    }
+-    if (!read_tensor_to_f32(w.joint.pred_b, out.joint.pred_b)) {
+-        return TRANSCRIBE_ERR_GGUF;
+-    }
+-    if (!read_tensor_to_f32(w.joint.out_b, out.joint.out_b)) {
+-        return TRANSCRIBE_ERR_GGUF;
+-    }
+-
+-    // Make the joint weights resident as fp32 ggml tensors. Fatal: a
++    // Make the joint weights resident as CPU ggml tensors. Fatal: a
+     // failure means the model cannot decode — fail fast at load.
+     if (w.joint.out_w == nullptr) {
+         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: joint out_w missing");
+@@ -760,7 +770,7 @@ transcribe_status build_host_decoder_weights(const ParakeetModel & model, HostDe
+                 out.joint.joint_h, out.joint.joint_n);
+         return TRANSCRIBE_ERR_GGUF;
+     }
+-    if (!build_joint_weight(out.joint, w.joint.out_w)) {
++    if (!build_joint_weight(out.joint, w.joint)) {
+         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: joint ggml weight build failed");
+         return TRANSCRIBE_ERR_BACKEND;
+     }
+@@ -814,8 +824,13 @@ const float * predictor_step_ggml(const HostPredictor & predictor,
+     if (last_token < 0) {
+         std::fill_n(scratch_x.data(), H, 0.0f);
+     } else {
+-        const size_t row_off = static_cast<size_t>(last_token) * static_cast<size_t>(H);
+-        std::memcpy(scratch_x.data(), predictor.embed_w.data() + row_off, static_cast<size_t>(H) * sizeof(float));
++        const size_t row_bytes = ggml_row_size(predictor.embed_type, H);
++        const auto * row       = predictor.embed_w.data() + static_cast<size_t>(last_token) * row_bytes;
++        if (predictor.embed_type == GGML_TYPE_F32) {
++            std::memcpy(scratch_x.data(), row, row_bytes);
++        } else {
++            ggml_get_type_traits(predictor.embed_type)->to_float(row, scratch_x.data(), H);
++        }
+     }
+ 
+     const size_t hb = static_cast<size_t>(H) * sizeof(float);
+@@ -896,56 +911,66 @@ bool joint_step(const HostJoint &    j,
+ // Compute the per-utterance encoder projection out[T, joint_h] =
+ // enc_out[T, d_enc] @ enc_w^T + enc_b as a single GEMM on `backend`
+ // (the shared decoder pool). Weight + bias are the model-resident
+-// j.g_enc_w / j.g_enc_b; only the input and result are allocated here.
++// j.g_enc_w / j.g_enc_b; only the result is allocated here.
+ // At n = T the matmul is a real GEMM (tinyBLAS engages with
+ // GGML_LLAMAFILE=ON). Returns false on ggml failure (→ hard decode error).
+-bool precompute_enc_proj_ggml(const HostJoint &    j,
+-                              ggml_backend_t       backend,
+-                              const float *        enc_out,
+-                              int                  T,
+-                              int                  d_enc,
+-                              std::vector<float> & out) {
++struct EncoderProjection {
++    ggml_context *        ctx    = nullptr;
++    ggml_backend_buffer_t buffer = nullptr;
++    const float *         result = nullptr;
++
++    EncoderProjection()                                      = default;
++    EncoderProjection(const EncoderProjection &)             = delete;
++    EncoderProjection & operator=(const EncoderProjection &) = delete;
++
++    ~EncoderProjection() {
++        safe_buffer_free(buffer);
++        ggml_free(ctx);
++    }
++
++    const float * data() const { return result; }
++};
++
++bool precompute_enc_proj_ggml(const HostJoint &   j,
++                              ggml_backend_t      backend,
++                              const float *       enc_out,
++                              int                 T,
++                              int                 d_enc,
++                              EncoderProjection & out) {
+     if (backend == nullptr || j.g_enc_w == nullptr || j.g_enc_b == nullptr) {
+         return false;
+     }
+-    const int joint_h = j.joint_h;
+-    out.resize(static_cast<size_t>(T) * static_cast<size_t>(joint_h));
+-
+     ggml_init_params ip{};
+     ip.mem_size        = ggml_tensor_overhead() * 6 + ggml_graph_overhead();
+     ip.mem_buffer      = nullptr;
+     ip.no_alloc        = true;
+-    ggml_context * ctx = ggml_init(ip);
++    ggml_context * ctx = out.ctx = ggml_init(ip);
+     if (ctx == nullptr) {
+         return false;
+     }
+ 
+     ggml_tensor * in = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, d_enc, T);
++    // The encoder's host buffer outlives this synchronous graph. Borrow it;
++    // keep the projected result in one CPU allocation through the decode loop.
++    in->data         = const_cast<float *>(enc_out);
+     ggml_set_input(in);
+     ggml_tensor * mm  = ggml_mul_mat(ctx, j.g_enc_w, in);  // [joint_h, T]
+-    ggml_tensor * res = ggml_add(ctx, mm, j.g_enc_b);      // + [joint_h] (broadcast over T)
++    ggml_tensor * res = ggml_add_inplace(ctx, mm, j.g_enc_b);
+     ggml_set_output(res);
+ 
+-    ggml_backend_buffer_t buf = ggml_backend_alloc_ctx_tensors(ctx, backend);
+-    if (buf == nullptr) {
+-        ggml_free(ctx);
++    out.buffer = ggml_backend_alloc_ctx_tensors(ctx, backend);
++    if (out.buffer == nullptr || !ggml_backend_buffer_is_host(out.buffer)) {
+         return false;
+     }
+ 
+-    ggml_backend_tensor_set(in, enc_out, 0, static_cast<size_t>(T) * static_cast<size_t>(d_enc) * sizeof(float));
+-
+     ggml_cgraph * graph = ggml_new_graph(ctx);
+     ggml_build_forward_expand(graph, res);
+     if (ggml_backend_graph_compute(backend, graph) != GGML_STATUS_SUCCESS) {
+-        safe_buffer_free(buf);
+-        ggml_free(ctx);
+         return false;
+     }
+-
+-    ggml_backend_tensor_get(res, out.data(), 0, static_cast<size_t>(T) * static_cast<size_t>(joint_h) * sizeof(float));
+-
+-    safe_buffer_free(buf);
+-    ggml_free(ctx);
++    out.result = static_cast<const float *>(res->data);
++    ggml_free(out.ctx);
++    out.ctx = nullptr;
+     return true;
+ }
+ 
+@@ -1066,9 +1091,9 @@ transcribe_status decode_tdt_greedy(const HostDecoderWeights & w,
+ 
+     // Precompute encoder projections for all T_enc frames (decode-state
+     // independent; one sgemm before the loop). See precompute_enc_proj_ggml.
+-    const int          joint_h = w.joint.joint_h;
+-    std::vector<float> enc_proj_all;
+-    const int64_t      t_enc_proj_start = ggml_time_us();
++    const int         joint_h = w.joint.joint_h;
++    EncoderProjection enc_proj_all;
++    const int64_t     t_enc_proj_start = ggml_time_us();
+     if (!precompute_enc_proj_ggml(w.joint, pg.backend, enc_out, T_enc, d_enc, enc_proj_all)) {
+         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: enc_proj graph failed");
+         return TRANSCRIBE_ERR_BACKEND;
+@@ -1279,9 +1304,9 @@ transcribe_status decode_rnnt_greedy(const HostDecoderWeights & w,
+     next_state.reset(n_layers, H);
+ 
+     // Precompute encoder projections for all T_enc frames (same as TDT).
+-    const int          joint_h = w.joint.joint_h;
+-    std::vector<float> enc_proj_all;
+-    const int64_t      t_enc_proj_start = ggml_time_us();
++    const int         joint_h = w.joint.joint_h;
++    EncoderProjection enc_proj_all;
++    const int64_t     t_enc_proj_start = ggml_time_us();
+     if (!precompute_enc_proj_ggml(w.joint, pg.backend, enc_out, T_enc, d_enc, enc_proj_all)) {
+         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder: enc_proj graph failed");
+         return TRANSCRIBE_ERR_BACKEND;
+@@ -1462,8 +1487,8 @@ transcribe_status decode_rnnt_greedy_streaming(const HostDecoderWeights & w,
+     }
+ 
+     // Precompute encoder projections for this chunk only.
+-    const int          joint_h = w.joint.joint_h;
+-    std::vector<float> enc_proj_all;
++    const int         joint_h = w.joint.joint_h;
++    EncoderProjection enc_proj_all;
+     if (!precompute_enc_proj_ggml(w.joint, pg.backend, enc_out, T_enc_new, d_enc, enc_proj_all)) {
+         log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "parakeet decoder (rnnt-stream): enc_proj graph failed");
+         return TRANSCRIBE_ERR_BACKEND;
+diff --git a/src/arch/parakeet/decoder.h b/src/arch/parakeet/decoder.h
+index e4de9dfa..ac3c344c 100644
+--- a/src/arch/parakeet/decoder.h
++++ b/src/arch/parakeet/decoder.h
+@@ -9,16 +9,19 @@
+ // graph). PredGraph owns the backend and threadpool; enc_proj and joint
+ // borrow it, so the whole decode shares a single pool with no
+ // oversubscription. Every decode call builds its own graphs (reentrant);
+-// weights are model-resident fp32 ggml tensors built once at load. The
++// weights are model-resident CPU ggml tensors built once at load. The
+ // CPU backend always exists (the decoder runs on host even with the
+ // model on a GPU), so a graph build failure is a hard decode error.
+ //
+-// All weights are fp32: the LSTM and joint matmuls are n=1 GEMV per step
+-// where quantization buys no usable bandwidth and only adds drift. Any
+-// joint quantization is a model/quant-level concern.
++// Matmuls use fp32 arithmetic. The Windows AVX2 kernel can retain original
++// Q8_0 LSTM and joint-output weights, expanding blocks in registers while
++// preserving the fp32 reduction order. Other builds use fp32 mirrors;
++// neither path adds weight or activation quantization.
+ //
+-// Memory cost: host + resident-ggml mirror of predictor + joint weights
+-// (~35 MB v2, ~73 MB v3) vs the ~2.4 GB encoder. Built once in
++// Embeddings retain their checkpoint encoding; only the selected row is
++// expanded, using the same dequantizer as the former full fp32 mirror.
++// Matmul weights are loaded directly into their resident CPU allocation,
++// with bounded staging for GPU readback. Built once in
+ // build_host_decoder_weights via ggml_backend_tensor_get (universal
+ // across host buffers, Metal unified memory, discrete GPUs).
+ //
+@@ -58,13 +61,7 @@ struct ParakeetHParams;
+ // W_ih + W_hh bias pre-summed at conversion time.
+ 
+ struct HostLstmLayer {
+-    // Host fp32 mirrors — LOAD-TIME SCRATCH ONLY: filled at load,
+-    // uploaded into the resident ggml tensors below, then freed.
+-    std::vector<float> Wx;  // [4*pred_hidden, pred_hidden] (freed after load)
+-    std::vector<float> Wh;  // [4*pred_hidden, pred_hidden] (freed after load)
+-    std::vector<float> b;   // [4*pred_hidden]              (freed after load)
+-
+-    // Resident fp32 ggml mirrors consumed by the predictor graph.
++    // Resident CPU ggml weights consumed by the predictor graph.
+     // Row-major [4*H, H] host bytes map to ggml ne [H, 4*H] (the mul_mat
+     // operand); bias is [4*H]. Borrowed into lstm_w_ctx, freed by dtor.
+     ggml_tensor * g_Wx = nullptr;
+@@ -75,15 +72,15 @@ struct HostLstmLayer {
+ struct HostPredictor {
+     int                        pred_hidden = 0;
+     int                        pred_vocab  = 0;  // includes the +1 start row
+-    std::vector<float>         embed_w;          // [pred_vocab, pred_hidden]
+-    std::vector<HostLstmLayer> lstm;             // pred_n_layers entries
++    // Original encoded embedding: expand only the selected row to fp32.
++    std::vector<uint8_t>       embed_w;  // [pred_vocab, pred_hidden], original GGML type
++    ggml_type                  embed_type = GGML_TYPE_F32;
++    std::vector<HostLstmLayer> lstm;     // pred_n_layers entries
+ 
+     // --- resident ggml LSTM weights (immutable, model-owned) ---
+-    // fp32 mirror of the per-layer Wx/Wh/b, made resident once at load so
+-    // the per-decode PredGraph reads them without re-uploading. fp32: the
+-    // per-step LSTM matmuls are n=1 GEMV (tinyBLAS skips n<2), so fp32 is
+-    // closest to the host reference at no speed cost. Owned here, freed by
+-    // dtor. On build failure lstm_ready stays false (hard decode error).
++    // Wx/Wh retain Q8_0 with the exact matvec, otherwise use fp32; biases
++    // remain fp32. PredGraph borrows these immutable allocations. Owned
++    // here, freed by dtor. Build failure leaves lstm_ready false.
+     ggml_context *        lstm_w_ctx     = nullptr;
+     ggml_backend_t        lstm_w_backend = nullptr;  // alloc-only; never compute'd
+     ggml_backend_buffer_t lstm_w_buf     = nullptr;
+@@ -104,19 +101,10 @@ struct HostJoint {
+     int         joint_n     = 0;  // total output classes (vocab+blank+durations)
+     std::string activation;       // "relu" / "sigmoid" / "tanh"
+ 
+-    // Host fp32 weight mirrors — LOAD-TIME SCRATCH ONLY: filled at load,
+-    // uploaded into the resident ggml tensors below, then freed. (out_w is
+-    // not mirrored — gw_w is built straight from the model tensor.)
+-    std::vector<float> enc_w;   // [joint_h, d_enc]       (freed after load)
+-    std::vector<float> enc_b;   // [joint_h]              (freed after load)
+-    std::vector<float> pred_w;  // [joint_h, pred_hidden] (freed after load)
+-    std::vector<float> pred_b;  // [joint_h]              (freed after load)
+-    std::vector<float> out_b;   // [joint_n]              (freed after load)
+-
+     // --- resident ggml weights (immutable, model-owned) ---
+     // The whole joint runs as one ggml graph (build_joint_graph), so
+-    // every weight is resident fp32: enc projection (g_enc_w/g_enc_b),
+-    // pred projection (g_pred_w/g_pred_b), out projection (gw_w/gw_b).
++    // every weight is CPU-resident. g_pred_w and gw_w may retain Q8_0
++    // with the exact matvec; the encoder projection and biases stay fp32.
+     // Built once at load, only read after — safe to share across every
+     // context; the mutable per-decode state lives in a stack-local
+     // JointGraph (reentrant). Owned here, freed by dtor.
+@@ -125,9 +113,9 @@ struct HostJoint {
+     ggml_backend_buffer_t w_buf     = nullptr;
+     ggml_tensor *         g_enc_w   = nullptr;  // [d_enc, joint_h] fp32 weight
+     ggml_tensor *         g_enc_b   = nullptr;  // [joint_h] fp32 bias
+-    ggml_tensor *         g_pred_w  = nullptr;  // [pred_hidden, joint_h] fp32 weight
++    ggml_tensor *         g_pred_w  = nullptr;  // [pred_hidden, joint_h] Q8_0 or fp32 weight
+     ggml_tensor *         g_pred_b  = nullptr;  // [joint_h] fp32 bias
+-    ggml_tensor *         gw_w      = nullptr;  // [joint_h, joint_n] fp32 weight
++    ggml_tensor *         gw_w      = nullptr;  // [joint_h, joint_n] Q8_0 or fp32 weight
+     ggml_tensor *         gw_b      = nullptr;  // [joint_n] fp32 bias
+     bool                  w_ready   = false;
+ 
+diff --git a/src/arch/parakeet/model.cpp b/src/arch/parakeet/model.cpp
+index 52fef35e..80ae1ddb 100644
+--- a/src/arch/parakeet/model.cpp
++++ b/src/arch/parakeet/model.cpp
+@@ -9,6 +9,7 @@
+ // run() computes the mel front-end, runs the encoder graph, then
+ // host-decodes (predictor + joint + TDT).
+ 
++#include "conformer/conformer.h"
+ #include "decoder.h"
+ #include "encoder.h"
+ #include "ggml-alloc.h"
+@@ -87,6 +88,9 @@ ParakeetSession::~ParakeetSession() {
+ // Base release_scratch has freed sched/compute_ctx; drop what pointed into them.
+ void ParakeetSession::on_scratch_released() noexcept {
+     encoder_out = nullptr;
++    std::vector<float>().swap(mel_buf);
++    std::vector<float>().swap(pos_buf);
++    std::vector<float>().swap(enc_host);
+ }
+ 
+ ParakeetModel::~ParakeetModel() {
+@@ -1096,6 +1100,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
+     // Upload the mel; the row-major [num_mels, n_frames] buffer is
+     // byte-identical to the ggml ne=[n_frames, num_mels, 1, 1] input.
+     ggml_backend_tensor_set(eb.mel_in, pc->mel_buf.data(), 0, pc->mel_buf.size() * sizeof(float));
++    std::vector<float>().swap(pc->mel_buf);
+ 
+     transcribe::debug::dump_tensor("enc.mel.in", eb.mel_in, "encoder.mel");
+ 
+@@ -1176,7 +1181,6 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
+     //   pe[i, 2k]    = sin(positions[i] * div_term[k])
+     //   pe[i, 2k+1]  = cos(positions[i] * div_term[k])
+     if (eb.pos_emb_in != nullptr) {
+-        const int d_model = pm->hparams.enc_d_model;
+         const int pos_len = static_cast<int>(eb.pos_emb_in->ne[1]);
+ 
+         // Position of "relative offset 0" in the buffer: (pos_len-1)/2 for
+@@ -1186,26 +1190,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
+             (!is_chunked) && (pm->hparams.enc_att_context_left >= 0 && pm->hparams.enc_att_context_right >= 0);
+         const int zero_index = is_local_pe ? pm->hparams.enc_att_context_left : (pos_len - 1) / 2;
+ 
+-        pc->pos_buf.assign(static_cast<size_t>(pos_len) * d_model, 0.0f);
+-
+-        pc->pos_div_term.resize(static_cast<size_t>(d_model / 2));
+-        const float ln_10000 = std::log(10000.0f);
+-        for (int k = 0; k < d_model / 2; ++k) {
+-            pc->pos_div_term[static_cast<size_t>(k)] =
+-                std::exp(static_cast<float>(2 * k) * (-ln_10000 / static_cast<float>(d_model)));
+-        }
+-
+-        for (int i = 0; i < pos_len; ++i) {
+-            const float pos = static_cast<float>(zero_index - i);
+-            float *     row = pc->pos_buf.data() + static_cast<size_t>(i) * d_model;
+-            for (int k = 0; k < d_model / 2; ++k) {
+-                const float div = pc->pos_div_term[static_cast<size_t>(k)];
+-                row[2 * k]      = std::sin(pos * div);
+-                row[2 * k + 1]  = std::cos(pos * div);
+-            }
+-        }
+-
+-        ggml_backend_tensor_set(eb.pos_emb_in, pc->pos_buf.data(), 0, pc->pos_buf.size() * sizeof(float));
++        transcribe::conformer::set_relative_positions(eb.pos_emb_in, zero_index);
+ 
+         transcribe::debug::dump_tensor("enc.pos_emb", eb.pos_emb_in, "encoder.pos_emb");
+     }
+@@ -1502,29 +1487,12 @@ static transcribe_status run_batch_encode(ParakeetSession *
+ 
+     // Positional embedding (batch-independent; depends only on T_enc).
+     if (eb.pos_emb_in != nullptr) {
+-        const int  d_model    = pm->hparams.enc_d_model;
+         const int  pos_len    = static_cast<int>(eb.pos_emb_in->ne[1]);
+         const bool is_chunked = (pm->hparams.enc_att_context_style == ParakeetHParams::AttContextStyle::ChunkedLimited);
+         const bool is_local_pe =
+             (!is_chunked) && (pm->hparams.enc_att_context_left >= 0 && pm->hparams.enc_att_context_right >= 0);
+         const int zero_index = is_local_pe ? pm->hparams.enc_att_context_left : (pos_len - 1) / 2;
+-        pc->pos_buf.assign(static_cast<size_t>(pos_len) * d_model, 0.0f);
+-        pc->pos_div_term.resize(static_cast<size_t>(d_model / 2));
+-        const float ln_10000 = std::log(10000.0f);
+-        for (int k = 0; k < d_model / 2; ++k) {
+-            pc->pos_div_term[static_cast<size_t>(k)] =
+-                std::exp(static_cast<float>(2 * k) * (-ln_10000 / static_cast<float>(d_model)));
+-        }
+-        for (int i = 0; i < pos_len; ++i) {
+-            const float pos = static_cast<float>(zero_index - i);
+-            float *     row = pc->pos_buf.data() + static_cast<size_t>(i) * d_model;
+-            for (int k = 0; k < d_model / 2; ++k) {
+-                const float div = pc->pos_div_term[static_cast<size_t>(k)];
+-                row[2 * k]      = std::sin(pos * div);
+-                row[2 * k + 1]  = std::cos(pos * div);
+-            }
+-        }
+-        ggml_backend_tensor_set(eb.pos_emb_in, pc->pos_buf.data(), 0, pc->pos_buf.size() * sizeof(float));
++        transcribe::conformer::set_relative_positions(eb.pos_emb_in, zero_index);
+     }
+ 
+     // Prompt one-hot upload (multilingual variants). Resolves
+diff --git a/src/conformer/conformer.cpp b/src/conformer/conformer.cpp
+index f811d36d..17c9d74c 100644
+--- a/src/conformer/conformer.cpp
++++ b/src/conformer/conformer.cpp
+@@ -9,17 +9,48 @@
+ 
+ #include "conformer/conformer.h"
+ 
++#include "ggml-backend.h"
+ #include "ggml.h"
+ #include "transcribe-env.h"
+ #include "transcribe-log.h"
+ 
++#include <algorithm>
+ #include <cmath>
+ #include <cstdio>
+ #include <cstdlib>
+ #include <cstring>
++#include <vector>
+ 
+ namespace transcribe::conformer {
+ 
++void set_relative_positions(ggml_tensor * tensor, int zero_index) {
++    GGML_ASSERT(tensor->type == GGML_TYPE_F32 && ggml_is_contiguous(tensor) && ggml_n_dims(tensor) <= 2);
++    const int64_t      width     = tensor->ne[0];
++    const int64_t      rows      = tensor->ne[1];
++    const int64_t      tile_rows = std::min(rows, std::max<int64_t>(1, 65536 / width));
++    std::vector<float> tile(static_cast<size_t>(tile_rows * width), 0.0f);
++    std::vector<float> div_term(static_cast<size_t>(width / 2));
++    const float        ln_10000 = std::log(10000.0f);
++    for (int64_t k = 0; k < width / 2; ++k) {
++        div_term[static_cast<size_t>(k)] =
++            std::exp(static_cast<float>(2 * k) * (-ln_10000 / static_cast<float>(width)));
++    }
++    for (int64_t base = 0; base < rows; base += tile_rows) {
++        const int64_t count = std::min(tile_rows, rows - base);
++        for (int64_t i = 0; i < count; ++i) {
++            const float pos = static_cast<float>(zero_index - (base + i));
++            float *     row = tile.data() + i * width;
++            for (int64_t k = 0; k < width / 2; ++k) {
++                const float div = div_term[static_cast<size_t>(k)];
++                row[2 * k]      = std::sin(pos * div);
++                row[2 * k + 1]  = std::cos(pos * div);
++            }
++        }
++        ggml_backend_tensor_set(tensor, tile.data(), static_cast<size_t>(base * width) * sizeof(float),
++                                static_cast<size_t>(count * width) * sizeof(float));
++    }
++}
++
+ ggml_tensor * named(ggml_tensor * t, const char * name) {
+     if (t != nullptr) {
+         ggml_set_name(t, name);
+diff --git a/src/conformer/conformer.h b/src/conformer/conformer.h
+index 7ed7af9d..e20831df 100644
+--- a/src/conformer/conformer.h
++++ b/src/conformer/conformer.h
+@@ -23,6 +23,8 @@
+ 
+ namespace transcribe::conformer {
+ 
++void set_relative_positions(ggml_tensor * tensor, int zero_index);
++
+ // LayerNorm + BatchNorm epsilon. Both default to 1e-5 in NeMo and are NOT
+ // stored in the GGUF, so hardcode to match.
+ constexpr float kLayerNormEps = 1e-5f;
+diff --git a/src/transcribe-arch.cpp b/src/transcribe-arch.cpp
+index fb768cba..5b05fc5d 100644
+--- a/src/transcribe-arch.cpp
++++ b/src/transcribe-arch.cpp
+@@ -93,10 +93,7 @@ const Arch * find_arch(const char * name) {
+     }
+ 
+     static const Arch * const k_archs[] = {
+-        &parakeet::arch,         &cohere::arch,      &canary::arch,     &qwen3_asr::arch,    &voxtral::arch,
+-        &voxtral_realtime::arch, &canary_qwen::arch, &whisper::arch,    &moonshine::arch,    &moonshine_streaming::arch,
+-        &sensevoice::arch,       &funasr_nano::arch, &gigaam::arch,     &granite::arch,      &granite_nar::arch,
+-        &medasr::arch,           &moss::arch,        &sortformer::arch, &granite5_ctc::arch,
++        &parakeet::arch, &canary::arch,
+     };
+     constexpr size_t k_n = sizeof(k_archs) / sizeof(k_archs[0]);
+ 
+diff --git a/src/transcribe-load-common.cpp b/src/transcribe-load-common.cpp
+index 0f17b856..477cc624 100644
+--- a/src/transcribe-load-common.cpp
++++ b/src/transcribe-load-common.cpp
+@@ -474,21 +474,22 @@ transcribe_status stream_tensor_data(const std::string &  path,
+             return TRANSCRIBE_ERR_GGUF;
+         }
+ 
+-        if (staging.size() < nbytes) {
+-            staging.resize(nbytes);
++        // Bound both the host read buffer and the GPU transfer staging buffer.
++        // Tensor data is opaque here, so chunks do not change weight values.
++        const size_t chunk_size = std::min(nbytes, size_t(1024 * 1024));
++        if (staging.size() < chunk_size) {
++            staging.resize(chunk_size);
+         }
+-        fin.read(reinterpret_cast<char *>(staging.data()), static_cast<std::streamsize>(nbytes));
+-        if (!fin) {
+-            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: short read for tensor \"%s\" (%zu bytes)", error_tag, t->name,
+-                    nbytes);
+-            return TRANSCRIBE_ERR_GGUF;
++        for (size_t offset = 0; offset < nbytes; offset += chunk_size) {
++            const size_t size = std::min(chunk_size, nbytes - offset);
++            fin.read(reinterpret_cast<char *>(staging.data()), static_cast<std::streamsize>(size));
++            if (!fin) {
++                log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: short read for tensor \"%s\" (%zu bytes)", error_tag, t->name,
++                        nbytes);
++                return TRANSCRIBE_ERR_GGUF;
++            }
++            ggml_backend_tensor_set(t, staging.data(), offset, size);
+         }
+-
+-        // ggml_backend_tensor_set is the right call regardless of
+-        // backend: on host buffers (CPU + Metal unified memory on
+-        // Apple Silicon) it's a memcpy; on discrete GPUs it does
+-        // the upload.
+-        ggml_backend_tensor_set(t, staging.data(), 0, nbytes);
+     }
+ 
+     return TRANSCRIBE_OK;
+diff --git a/src/transcribe-mel.cpp b/src/transcribe-mel.cpp
+index 085197e0..4b84c30c 100644
+--- a/src/transcribe-mel.cpp
++++ b/src/transcribe-mel.cpp
+@@ -37,6 +37,7 @@
+ #include <cmath>
+ #include <cstddef>
+ #include <cstring>
++#include <functional>
+ #include <limits>
+ #include <thread>
+ #include <vector>
+@@ -295,9 +296,7 @@ MelFrontend::MelFrontend(const MelConfig & cfg) : cfg_(cfg) {
+     }
+ 
+     // Use checkpoint-provided mel filterbank if available, else compute.
+-    if (!cfg.filterbank.empty()) {
+-        mel_fb_ = cfg.filterbank;
+-    } else {
++    if (cfg.filterbank.empty()) {
+         build_mel_filterbank_slaney(cfg.sample_rate, cfg.n_fft, cfg.num_mels, static_cast<double>(cfg.f_min),
+                                     static_cast<double>(cfg.f_max), mel_fb_);
+     }
+@@ -379,9 +378,35 @@ transcribe_status MelFrontend::compute(const float *        pcm,
+     // FFT routines are fp64-native.
+     const bool n_fft_is_pow2 = ((n_fft > 0) && ((n_fft & (n_fft - 1)) == 0));
+ 
+-    std::vector<float>  padded_f32;
+-    std::vector<float>  window_f32;
+-    std::vector<double> padded;
++    // Retain the previous input/output alias behavior. Normal inference passes
++    // separate buffers, so this copy is only needed for in-place callers.
++    std::vector<float> aliased_pcm;
++    const auto         before = std::less<const float *>{};
++    if (n_fft_is_pow2 && !out_mel.empty() && before(pcm, out_mel.data() + out_mel.size()) &&
++        before(out_mel.data(), pcm + n_samples)) {
++        aliased_pcm.assign(pcm, pcm + n_samples);
++        pcm = aliased_pcm.data();
++    }
++
++    std::vector<float> padded_f32;
++    std::vector<float> window_f32;
++
++    // Read the fp64 pre-emphasized signal on demand. Overlapping FFT frames
++    // share the original PCM instead of another whole-utterance allocation.
++    const auto padded_sample = [&](size_t index) -> double {
++        int64_t source = static_cast<int64_t>(index) - (no_pad ? 0 : pad);
++        if (source < 0 || static_cast<uint64_t>(source) >= n_samples) {
++            if (!use_reflect) {
++                return 0.0;
++            }
++            source = source < 0 ? -source : 2 * (static_cast<int64_t>(n_samples) - 1) - source;
++        }
++        const double current = static_cast<double>(pcm[source]);
++        if (cfg_.pre_emphasis != 0.0f && source > 0) {
++            return current - static_cast<double>(cfg_.pre_emphasis) * static_cast<double>(pcm[source - 1]);
++        }
++        return current;
++    };
+ 
+     if (!n_fft_is_pow2) {
+         // FP32 path: pre-emphasis (or copy) directly into the middle of
+@@ -417,46 +442,6 @@ transcribe_status MelFrontend::compute(const float *        pcm,
+         for (int i = 0; i < n_fft; ++i) {
+             window_f32[i] = static_cast<float>(window_[i]);
+         }
+-    } else {
+-        // FP64 path (Parakeet, Cohere): unchanged. emph buffer + fp64
+-        // padded, identical to the original implementation.
+-        std::vector<double> emph(n_samples);
+-        if (cfg_.pre_emphasis != 0.0f) {
+-            const double alpha = static_cast<double>(cfg_.pre_emphasis);
+-            emph[0]            = static_cast<double>(pcm[0]);
+-            for (size_t i = 1; i < n_samples; ++i) {
+-                emph[i] = static_cast<double>(pcm[i]) - alpha * static_cast<double>(pcm[i - 1]);
+-            }
+-        } else {
+-            for (size_t i = 0; i < n_samples; ++i) {
+-                emph[i] = static_cast<double>(pcm[i]);
+-            }
+-        }
+-
+-        if (no_pad) {
+-            // PyTorch center=False: no input padding. Sized so that the
+-            // last frame (start=(n_frames-1)*hop) can read n_fft samples
+-            // without overflowing. The trailing (n_fft - win_length) slots
+-            // beyond the data are read but always multiplied by zero in
+-            // the left-aligned window, so their value is irrelevant.
+-            padded.resize(n_samples + static_cast<size_t>(n_fft - win), 0.0);
+-            std::memcpy(padded.data(), emph.data(), n_samples * sizeof(double));
+-        } else {
+-            padded.resize(n_samples + 2 * static_cast<size_t>(pad));
+-            if (use_reflect) {
+-                for (int i = 0; i < pad; ++i) {
+-                    padded[i] = emph[static_cast<size_t>(pad - i)];
+-                }
+-                std::memcpy(padded.data() + pad, emph.data(), n_samples * sizeof(double));
+-                for (int i = 0; i < pad; ++i) {
+-                    padded[static_cast<size_t>(pad) + n_samples + i] = emph[n_samples - 2 - static_cast<size_t>(i)];
+-                }
+-            } else {
+-                std::memset(padded.data(), 0, static_cast<size_t>(pad) * sizeof(double));
+-                std::memcpy(padded.data() + pad, emph.data(), n_samples * sizeof(double));
+-                std::memset(padded.data() + pad + n_samples, 0, static_cast<size_t>(pad) * sizeof(double));
+-            }
+-        }
+     }
+ 
+     // ---- 3. STFT + mel filterbank matmul + log ----
+@@ -476,7 +461,11 @@ transcribe_status MelFrontend::compute(const float *        pcm,
+     // log mode (whisper_mode): per_utterance writes log10(max(x, 1e-10));
+     // per_feature writes log(x + 2^-24) (natural log; base is irrelevant
+     // to the per-bin mean/std normalize that follows).
+-    std::vector<float> log_mel(static_cast<size_t>(n_mels) * static_cast<size_t>(n_frames));
++    // Per-feature normalization reads each row completely before writing it,
++    // so it can share the caller's output instead of duplicating the mel bank.
++    std::vector<float>   log_storage;
++    std::vector<float> & log_mel = cfg_.normalize == "per_feature" ? out_mel : log_storage;
++    log_mel.resize(static_cast<size_t>(n_mels) * static_cast<size_t>(n_frames));
+ 
+     const bool whisper_mode = (cfg_.normalize == "per_utterance" || cfg_.normalize == "global");
+ 
+@@ -529,7 +518,7 @@ transcribe_status MelFrontend::compute(const float *        pcm,
+                     power_scratch[k] = re * re + im * im;
+                 }
+                 for (int m = 0; m < n_mels; ++m) {
+-                    const float * fb_row = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
++                    const float * fb_row = filterbank().data() + static_cast<size_t>(m) * n_freq;
+                     double        sum    = 0.0;
+                     int           k      = 0;
+                     for (; k < n_freq - 3; k += 4) {
+@@ -556,12 +545,65 @@ transcribe_status MelFrontend::compute(const float *        pcm,
+         };
+         run_threaded(worker);
+     } else {
++#if !defined(__APPLE__) && !TRANSCRIBE_HAS_BLAS
++        // Without BLAS, consume each FFT frame immediately. Keep the existing
++        // fp64 FFT and summation order without a whole-utterance power matrix.
++        auto worker = [&](int tid) {
++            std::vector<double> frame(2 * static_cast<size_t>(n_fft));
++            std::vector<float>  power_frame(static_cast<size_t>(n_freq));
++            for (int t = tid; t < n_frames; t += stft_threads) {
++                const size_t start = static_cast<size_t>(t) * static_cast<size_t>(hop);
++                for (int k = 0; k < n_fft; ++k) {
++                    frame[2 * static_cast<size_t>(k)]     = padded_sample(start + static_cast<size_t>(k)) * window_[k];
++                    frame[2 * static_cast<size_t>(k) + 1] = 0.0;
++                }
++                fft_radix2(frame.data(), n_fft);
++                for (int k = 0; k < n_freq; ++k) {
++                    const double re = frame[2 * static_cast<size_t>(k)];
++                    const double im = frame[2 * static_cast<size_t>(k) + 1];
++                    power_frame[k]  = static_cast<float>(re * re + im * im);
++                }
++                const float * pwr = power_frame.data();
++                for (int m = 0; m < n_mels; ++m) {
++                    const float * fb_row = filterbank().data() + static_cast<size_t>(m) * n_freq;
++                    double        sum    = 0.0;
++                    int           k      = 0;
++                    for (; k < n_freq - 3; k += 4) {
++                        sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]) +
++                               static_cast<double>(fb_row[k + 1]) * static_cast<double>(pwr[k + 1]) +
++                               static_cast<double>(fb_row[k + 2]) * static_cast<double>(pwr[k + 2]) +
++                               static_cast<double>(fb_row[k + 3]) * static_cast<double>(pwr[k + 3]);
++                    }
++                    for (; k < n_freq; ++k) {
++                        sum += static_cast<double>(fb_row[k]) * static_cast<double>(pwr[k]);
++                    }
++                    float result;
++                    if (whisper_mode) {
++                        if (sum < 1.0e-10) {
++                            sum = 1.0e-10;
++                        }
++                        result = static_cast<float>(std::log10(sum));
++                    } else if (cfg_.log_clamp_min > 0.0f) {
++                        const double clamp = static_cast<double>(cfg_.log_clamp_min);
++                        if (sum < clamp) {
++                            sum = clamp;
++                        }
++                        result = static_cast<float>(std::log(sum));
++                    } else {
++                        result = static_cast<float>(std::log(sum + static_cast<double>(kLogEps)));
++                    }
++                    log_mel[static_cast<size_t>(m) * n_frames + t] = result;
++                }
++            }
++        };
++        run_threaded(worker);
++#else
+         // pow2 paths (Parakeet, Cohere): unchanged structure. FFT
+         // worker writes shared power[]; post-pass does the matmul +
+         // log.
+         std::vector<float> power(static_cast<size_t>(n_frames) * static_cast<size_t>(n_freq));
+ 
+-#ifdef __APPLE__
++#    ifdef __APPLE__
+         // vDSP real-input FFT (fp64, vectorized via Accelerate SIMD).
+         int log2n = 0;
+         {
+@@ -587,8 +629,8 @@ transcribe_status MelFrontend::compute(const float *        pcm,
+             for (int t = tid; t < n_frames; t += stft_threads) {
+                 const size_t start = static_cast<size_t>(t) * static_cast<size_t>(hop);
+                 for (size_t k = 0; k < half_n; ++k) {
+-                    fft_real[k] = padded[start + 2 * k] * window_[2 * k];
+-                    fft_imag[k] = padded[start + 2 * k + 1] * window_[2 * k + 1];
++                    fft_real[k] = padded_sample(start + 2 * k) * window_[2 * k];
++                    fft_imag[k] = padded_sample(start + 2 * k + 1) * window_[2 * k + 1];
+                 }
+                 vDSP_fft_zripD(fft_setup, &split, 1, log2n, FFT_FORWARD);
+                 // vDSP output is 2x the standard DFT, so power is 4x.
+@@ -604,14 +646,14 @@ transcribe_status MelFrontend::compute(const float *        pcm,
+         };
+         run_threaded(worker);
+         vDSP_destroy_fftsetupD(fft_setup);
+-#else
++#    else
+         // Hand-rolled radix-2 Cooley-Tukey FFT fallback for non-Apple.
+         auto worker = [&](int tid) {
+             std::vector<double> frame(2 * static_cast<size_t>(n_fft));
+             for (int t = tid; t < n_frames; t += stft_threads) {
+                 const size_t start = static_cast<size_t>(t) * static_cast<size_t>(hop);
+                 for (int k = 0; k < n_fft; ++k) {
+-                    frame[2 * static_cast<size_t>(k)]     = padded[start + static_cast<size_t>(k)] * window_[k];
++                    frame[2 * static_cast<size_t>(k)]     = padded_sample(start + static_cast<size_t>(k)) * window_[k];
+                     frame[2 * static_cast<size_t>(k) + 1] = 0.0;
+                 }
+                 fft_radix2(frame.data(), n_fft);
+@@ -624,13 +666,13 @@ transcribe_status MelFrontend::compute(const float *        pcm,
+             }
+         };
+         run_threaded(worker);
+-#endif
++#    endif
+ 
+         // pow2 post-pass matmul + log → log_mel.
+-#if defined(__APPLE__) || TRANSCRIBE_HAS_BLAS
++#    if defined(__APPLE__) || TRANSCRIBE_HAS_BLAS
+         // C = A @ B^T  where A=[n_mels, n_freq], B=[n_frames, n_freq].
+-        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n_mels, n_frames, n_freq, 1.0f, mel_fb_.data(), n_freq,
+-                    power.data(), n_freq, 0.0f, log_mel.data(), n_frames);
++        cblas_sgemm(CblasRowMajor, CblasNoTrans, CblasTrans, n_mels, n_frames, n_freq, 1.0f, filterbank().data(),
++                    n_freq, power.data(), n_freq, 0.0f, log_mel.data(), n_frames);
+         {
+             const size_t total = static_cast<size_t>(n_mels) * static_cast<size_t>(n_frames);
+             if (whisper_mode) {
+@@ -660,12 +702,12 @@ transcribe_status MelFrontend::compute(const float *        pcm,
+                 }
+             }
+         }
+-#else
++#    else
+         // Scalar fused matmul + log fallback (no BLAS available).
+         for (int t = 0; t < n_frames; ++t) {
+             const float * pwr = power.data() + static_cast<size_t>(t) * n_freq;
+             for (int m = 0; m < n_mels; ++m) {
+-                const float * fb_row = mel_fb_.data() + static_cast<size_t>(m) * n_freq;
++                const float * fb_row = filterbank().data() + static_cast<size_t>(m) * n_freq;
+                 double        sum    = 0.0;
+                 int           k      = 0;
+                 for (; k < n_freq - 3; k += 4) {
+@@ -695,10 +737,10 @@ transcribe_status MelFrontend::compute(const float *        pcm,
+                 log_mel[static_cast<size_t>(m) * n_frames + t] = result;
+             }
+         }
++#    endif
+ #endif
+     }
+ 
+-    std::vector<double>().swap(padded);
+     std::vector<float>().swap(padded_f32);
+     std::vector<float>().swap(window_f32);
+ 
+diff --git a/src/transcribe-mel.h b/src/transcribe-mel.h
+index b547435e..96d5bf3c 100644
+--- a/src/transcribe-mel.h
++++ b/src/transcribe-mel.h
+@@ -162,7 +162,7 @@ class MelFrontend {
+     // isolation without running the full pipeline.
+     const std::vector<double> & window() const { return window_; }
+ 
+-    const std::vector<float> & filterbank() const { return mel_fb_; }
++    const std::vector<float> & filterbank() const { return cfg_.filterbank.empty() ? mel_fb_ : cfg_.filterbank; }
+ 
+     const MelConfig & config() const { return cfg_; }
+ 
+diff --git a/src/transcribe-session.h b/src/transcribe-session.h
+index e3984b7e..ff5b9b5a 100644
+--- a/src/transcribe-session.h
++++ b/src/transcribe-session.h
+@@ -328,10 +328,8 @@ struct transcribe_session {
+     // about 10 ms on CPU for families that reserve a worst-case decoder
+     // workspace each run, such as Canary and Cohere.
+     //
+-    // Host-side vectors that scale with input length, such as mel buffers,
+-    // encoder host copies, and positional banks, deliberately retain their
+-    // capacity. Family KV caches sized by the last batch are also retained;
+-    // this hook releases only the ggml scheduler and compute context.
++    // The base releases only the scheduler and compute context. Family hooks
++    // decide whether to release host buffers and offline KV caches as well.
+     //
+     // Streaming entry points do not invoke this hook. A streaming session
+     // keeps its scheduler until a later offline run or session destruction.
+diff --git a/src/transcribe-tokenizer.cpp b/src/transcribe-tokenizer.cpp
+index eb8de116..0edd615e 100644
+--- a/src/transcribe-tokenizer.cpp
++++ b/src/transcribe-tokenizer.cpp
+@@ -21,9 +21,11 @@
+ #include <cstdint>
+ #include <cstdio>
+ #include <cstring>
++#include <functional>
+ #include <limits>
+ #include <queue>
+ #include <string>
++#include <string_view>
+ #include <unordered_map>
+ #include <vector>
+ 
+@@ -44,6 +46,35 @@ constexpr int        k_sp_space_len = 3;
+ // 0x0100-0x0142 range before BPE sees them.
+ constexpr char k_merge_sep = '\x1F';
+ 
++size_t piece_slot(const std::vector<int32_t> & index, const std::vector<std::string> & tokens, std::string_view piece) {
++    const size_t mask = index.size() - 1;
++    size_t       slot = std::hash<std::string_view>{}(piece) &mask;
++    while (index[slot] >= 0 && tokens[static_cast<size_t>(index[slot])] != piece) {
++        slot = (slot + 1) & mask;
++    }
++    return slot;
++}
++
++int32_t find_piece(const std::vector<int32_t> &     index,
++                   const std::vector<std::string> & tokens,
++                   std::string_view                 piece) {
++    return index.empty() ? -1 : index[piece_slot(index, tokens, piece)];
++}
++
++void build_piece_index(const std::vector<std::string> & tokens, std::vector<int32_t> & index) {
++    size_t capacity = 1;
++    while (capacity < tokens.size() * 2) {
++        capacity *= 2;
++    }
++    index.assign(capacity, -1);
++    for (size_t i = 0; i < tokens.size(); ++i) {
++        auto & id = index[piece_slot(index, tokens, tokens[i])];
++        if (id < 0) {
++            id = static_cast<int32_t>(i);
++        }
++    }
++}
++
+ // Read a typed-element scalar array KV. ExpectedType is the gguf_type
+ // the array elements should have; T is the C++ type the loader copies
+ // them into. Returns KvResult so the caller can distinguish "absent"
+@@ -102,9 +133,9 @@ bool Tokenizer::is_control(int id) const {
+ }
+ 
+ int Tokenizer::find(const std::string & piece) const {
+-    const auto it = piece_to_id_.find(piece);
+-    if (it != piece_to_id_.end()) {
+-        return it->second;
++    const int32_t id = find_piece(piece_to_id_, tokens_, piece);
++    if (id >= 0) {
++        return id;
+     }
+     // Synthesized special-piece map: only populated by adapters that
+     // need find() to surface literals absent from tokens_ (whisper.cpp
+@@ -330,10 +361,11 @@ struct BigramGreater {
+ // dispatch into it cleanly.
+ namespace {
+ 
+-transcribe_status encode_tiktoken_raw_bytes(const std::string &                              text,
+-                                            const std::string &                              pre,
+-                                            const std::unordered_map<std::string, int32_t> & piece_to_id,
+-                                            std::vector<int32_t> &                           out_ids) {
++transcribe_status encode_tiktoken_raw_bytes(const std::string &              text,
++                                            const std::string &              pre,
++                                            const std::vector<int32_t> &     piece_to_id,
++                                            const std::vector<std::string> & tokens,
++                                            std::vector<int32_t> &           out_ids) {
+     out_ids.clear();
+     if (text.empty()) {
+         return TRANSCRIBE_OK;
+@@ -358,8 +390,7 @@ transcribe_status encode_tiktoken_raw_bytes(const std::string &
+         key.reserve(left.size() + right.size());
+         key.append(left);
+         key.append(right);
+-        const auto it = piece_to_id.find(key);
+-        return (it == piece_to_id.end()) ? -1 : it->second;
++        return find_piece(piece_to_id, tokens, key);
+     };
+ 
+     std::vector<Symbol> symbols;
+@@ -442,9 +473,9 @@ transcribe_status encode_tiktoken_raw_bytes(const std::string &
+                 continue;
+             }
+             const std::string piece(s.text, s.n);
+-            const auto        it = piece_to_id.find(piece);
+-            if (it != piece_to_id.end()) {
+-                out_ids.push_back(it->second);
++            const int32_t     id = find_piece(piece_to_id, tokens, piece);
++            if (id >= 0) {
++                out_ids.push_back(id);
+                 continue;
+             }
+             // Single-byte fallback: every byte should be in the
+@@ -452,15 +483,15 @@ transcribe_status encode_tiktoken_raw_bytes(const std::string &
+             // structurally broken.
+             for (size_t j = 0; j < piece.size(); ++j) {
+                 const std::string sub(piece, j, 1);
+-                const auto        it2 = piece_to_id.find(sub);
+-                if (it2 == piece_to_id.end()) {
++                const int32_t     sub_id = find_piece(piece_to_id, tokens, sub);
++                if (sub_id < 0) {
+                     log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                             "tokenizer.encode: byte 0x%02X not in "
+                             "vocab",
+                             static_cast<unsigned>(static_cast<unsigned char>(piece[j])));
+                     return TRANSCRIBE_ERR_GGUF;
+                 }
+-                out_ids.push_back(it2->second);
++                out_ids.push_back(sub_id);
+             }
+         }
+     }
+@@ -608,7 +639,7 @@ transcribe_status Tokenizer::encode(const std::string & text, std::vector<int32_
+         if (tokens_.empty()) {
+             return TRANSCRIBE_ERR_GGUF;
+         }
+-        return encode_tiktoken_raw_bytes(text, pre_, piece_to_id_, out_ids);
++        return encode_tiktoken_raw_bytes(text, pre_, piece_to_id_, tokens_, out_ids);
+     }
+ 
+     if (model_ != "gpt2") {
+@@ -758,9 +789,9 @@ transcribe_status Tokenizer::encode(const std::string & text, std::vector<int32_
+                 continue;
+             }
+             const std::string piece(s.text, s.n);
+-            const auto        it = piece_to_id_.find(piece);
+-            if (it != piece_to_id_.end()) {
+-                out_ids.push_back(it->second);
++            const int32_t     id = find_piece(piece_to_id_, tokens_, piece);
++            if (id >= 0) {
++                out_ids.push_back(id);
+                 continue;
+             }
+             // BPE didn't land on a whole-vocab token — decompose into
+@@ -770,15 +801,15 @@ transcribe_status Tokenizer::encode(const std::string & text, std::vector<int32_
+             for (size_t j = 0; j < piece.size(); /*++j*/) {
+                 const size_t      clen = std::min(piece.size() - j, unicode::len_utf8(piece[j]));
+                 const std::string sub(piece, j, clen);
+-                const auto        it2 = piece_to_id_.find(sub);
+-                if (it2 == piece_to_id_.end()) {
++                const int32_t     sub_id = find_piece(piece_to_id_, tokens_, sub);
++                if (sub_id < 0) {
+                     log_msg(TRANSCRIBE_LOG_LEVEL_ERROR,
+                             "tokenizer.encode: byte-fallback piece "
+                             "not in vocab (\"%s\")",
+                             sub.c_str());
+                     return TRANSCRIBE_ERR_GGUF;
+                 }
+-                out_ids.push_back(it2->second);
++                out_ids.push_back(sub_id);
+                 j += clen;
+             }
+         }
+@@ -844,6 +875,7 @@ transcribe_status Tokenizer::load(const gguf_context * gguf) {
+     }
+ 
+     // Required: tokens array. Same Absent/BadType semantics.
++    piece_to_id_.clear();
+     switch (read_string_array_kv(gguf, "tokenizer.ggml.tokens", tokens_)) {
+         case KvResult::Absent:
+         case KvResult::BadType:
+@@ -860,12 +892,8 @@ transcribe_status Tokenizer::load(const gguf_context * gguf) {
+     // is cleared too: GGUFs carry every special as a real vocab entry,
+     // so the synthesized-special fallback should be empty here. Hygiene
+     // matters if a Tokenizer instance is ever reused across loads.
+-    piece_to_id_.clear();
+     special_pieces_.clear();
+-    piece_to_id_.reserve(tokens_.size() * 2);
+-    for (size_t i = 0; i < tokens_.size(); ++i) {
+-        piece_to_id_.emplace(tokens_[i], static_cast<int32_t>(i));
+-    }
++    build_piece_index(tokens_, piece_to_id_);
+ 
+     // Optional: scores. Absent is fine (we clear and move on); BadType
+     // is a converter bug and propagates as ERR_GGUF. The length-must-
+@@ -976,18 +1004,14 @@ namespace {
+ // the RawBytes loader (whisper.cpp .bin) gets a tiktoken-style
+ // encoder via piece_to_id_ ranks; the Gpt2ByteUnicode decode-only
+ // loader (no merges populated) reports has_encoder() == false.
+-transcribe_status install_decode_only_vocab(std::vector<std::string> &                 tokens_dst,
+-                                            std::unordered_map<std::string, int32_t> & piece_to_id_dst,
+-                                            std::vector<std::string>                   tokens_src) {
++transcribe_status install_decode_only_vocab(std::vector<std::string> & tokens_dst,
++                                            std::vector<int32_t> &     piece_to_id_dst,
++                                            std::vector<std::string>   tokens_src) {
+     if (tokens_src.empty()) {
+         return TRANSCRIBE_ERR_INVALID_ARG;
+     }
+     tokens_dst = std::move(tokens_src);
+-    piece_to_id_dst.clear();
+-    piece_to_id_dst.reserve(tokens_dst.size() * 2);
+-    for (size_t i = 0; i < tokens_dst.size(); ++i) {
+-        piece_to_id_dst.emplace(tokens_dst[i], static_cast<int32_t>(i));
+-    }
++    build_piece_index(tokens_dst, piece_to_id_dst);
+     return TRANSCRIBE_OK;
+ }
+ 
+diff --git a/src/transcribe-tokenizer.h b/src/transcribe-tokenizer.h
+index 0b5f3597..232b8397 100644
+--- a/src/transcribe-tokenizer.h
++++ b/src/transcribe-tokenizer.h
+@@ -244,10 +244,9 @@ class Tokenizer {
+     std::vector<float>       scores_;      // optional, may be empty
+     std::vector<int32_t>     token_type_;  // optional, may be empty
+ 
+-    // O(1) piece -> id lookup built at load time. Duplicates are rare
+-    // (only from the byte-fallback vocab augmentation); we keep the
+-    // first-occurrence id which matches the forward tokens_ ordering.
+-    std::unordered_map<std::string, int32_t> piece_to_id_;
++    // Open-addressed ids into tokens_; no duplicate strings or node allocations.
++    // First occurrence wins. Indices remain valid across tokenizer copy/move.
++    std::vector<int32_t> piece_to_id_;
+ 
+     // Optional synthesized special-token lookup. Populated only by
+     // adapters that need find() to recognize literals that aren't in
+diff --git a/tests/parakeet_real_smoke.cpp b/tests/parakeet_real_smoke.cpp
+index 141b8b1c..69ae1ad6 100644
+--- a/tests/parakeet_real_smoke.cpp
++++ b/tests/parakeet_real_smoke.cpp
+@@ -63,6 +63,7 @@
+ #include <cstdlib>
+ #include <cstring>
+ #include <string>
++#include <vector>
+ 
+ namespace {
+ 
+@@ -298,6 +299,64 @@ int main() {
+         }
+     }
+ 
++    // RAM optimizations must preserve every decoded weight bit, including
++    // transfers larger than the bounded readback chunk and every embed row.
++    {
++        const auto decode_original = [](const ggml_tensor * tensor) {
++            std::vector<uint8_t> raw(ggml_nbytes(tensor));
++            ggml_backend_tensor_get(tensor, raw.data(), 0, raw.size());
++            std::vector<float> expanded(static_cast<size_t>(ggml_nelements(tensor)));
++            if (tensor->type == GGML_TYPE_F32) {
++                std::memcpy(expanded.data(), raw.data(), raw.size());
++            } else {
++                ggml_get_type_traits(tensor->type)->to_float(raw.data(), expanded.data(), ggml_nelements(tensor));
++            }
++            return expanded;
++        };
++        const auto check_mirror = [&](const ggml_tensor * original, const ggml_tensor * mirror) {
++            CHECK(mirror != nullptr);
++            if (mirror == nullptr) {
++                return;
++            }
++            const auto expected = decode_original(original);
++            CHECK(ggml_nelements(mirror) == static_cast<int64_t>(expected.size()));
++            if (ggml_nelements(mirror) == static_cast<int64_t>(expected.size())) {
++                const auto actual = decode_original(mirror);
++                CHECK(std::memcmp(expected.data(), actual.data(), actual.size() * sizeof(float)) == 0);
++            }
++        };
++        const auto & cache = pm->host_decoder;
++        CHECK(cache.predictor.lstm_ready);
++        CHECK(cache.joint.w_ready);
++        for (size_t i = 0; i < cache.predictor.lstm.size(); ++i) {
++            check_mirror(pm->weights.predictor.lstm[i].Wx, cache.predictor.lstm[i].g_Wx);
++            check_mirror(pm->weights.predictor.lstm[i].Wh, cache.predictor.lstm[i].g_Wh);
++            check_mirror(pm->weights.predictor.lstm[i].b, cache.predictor.lstm[i].g_b);
++        }
++        check_mirror(pm->weights.joint.out_w, cache.joint.gw_w);
++        check_mirror(pm->weights.joint.enc_w, cache.joint.g_enc_w);
++        check_mirror(pm->weights.joint.enc_b, cache.joint.g_enc_b);
++        check_mirror(pm->weights.joint.pred_w, cache.joint.g_pred_w);
++        check_mirror(pm->weights.joint.pred_b, cache.joint.g_pred_b);
++        check_mirror(pm->weights.joint.out_b, cache.joint.gw_b);
++        const auto * embedding = pm->weights.predictor.embed_w;
++        const auto   expected  = decode_original(embedding);
++        CHECK(cache.predictor.embed_type == embedding->type);
++        CHECK(cache.predictor.embed_w.size() == ggml_nbytes(embedding));
++        const size_t       row_bytes = ggml_row_size(embedding->type, hp.pred_hidden);
++        std::vector<float> row(static_cast<size_t>(hp.pred_hidden));
++        for (int i = 0; i < hp.pred_vocab; ++i) {
++            const auto * encoded = cache.predictor.embed_w.data() + static_cast<size_t>(i) * row_bytes;
++            if (embedding->type == GGML_TYPE_F32) {
++                std::memcpy(row.data(), encoded, row.size() * sizeof(float));
++            } else {
++                ggml_get_type_traits(embedding->type)->to_float(encoded, row.data(), hp.pred_hidden);
++            }
++            CHECK(std::memcmp(expected.data() + static_cast<size_t>(i) * row.size(), row.data(),
++                              row.size() * sizeof(float)) == 0);
++        }
++    }
++
+     // Lifecycle: polymorphic delete via the base virtual destructor.
+     // The ParakeetModel destructor frees ctx_meta (which owns ~2.4 GB
+     // of weight data). ASan in the sanitizer build catches any
+diff --git a/tests/tokenizer_decode_only_unit.cpp b/tests/tokenizer_decode_only_unit.cpp
+index 21f6a01a..57c36f6e 100644
+--- a/tests/tokenizer_decode_only_unit.cpp
++++ b/tests/tokenizer_decode_only_unit.cpp
+@@ -29,6 +29,7 @@
+ 
+ #include <cstdio>
+ #include <string>
++#include <utility>
+ #include <vector>
+ 
+ namespace {
+@@ -191,12 +192,41 @@ void test_empty_vocab_rejected() {
+     CHECK(tok.load_decode_only_raw_bytes(empty) == TRANSCRIBE_ERR_INVALID_ARG);
+ }
+ 
++void test_lookup_lifecycle() {
++    transcribe::Tokenizer tok;
++    for (int count : { 7, 8192, 4, 32769 }) {
++        std::vector<std::string> vocab;
++        for (int i = 0; i < count; ++i) {
++            vocab.push_back(std::to_string(i) + std::string(i % 47, 'x'));
++        }
++        vocab[0] = "";
++        vocab[1] = std::string("a\0b", 3);
++        vocab[2] = "\xc4\x8d\xc5\xa1\xc5\xbe";
++        vocab.push_back(vocab[0]);
++        vocab.push_back(vocab[1]);
++        vocab.push_back(vocab[count - 1]);
++        CHECK(tok.load_decode_only_raw_bytes(vocab) == TRANSCRIBE_OK);
++        auto copied = tok;
++        auto moved  = std::move(copied);
++        CHECK(tok.load_decode_only_raw_bytes({ "replacement" }) == TRANSCRIBE_OK);
++        CHECK(tok.find(vocab[count - 1]) == -1);
++        tok = moved;
++        for (int i = 0; i < count; ++i) {
++            CHECK(tok.find(vocab[i]) == i);
++            CHECK(moved.find(vocab[i]) == i);
++            CHECK(tok.find(vocab[i] + "missing") == -1);
++        }
++        CHECK(tok.find("not in vocabulary") == -1);
++    }
++}
++
+ }  // namespace
+ 
+ int main() {
+     test_gpt2_decode_only();
+     test_raw_bytes_decode_only();
+     test_empty_vocab_rejected();
++    test_lookup_lifecycle();
+ 
+     if (g_failures > 0) {
+         std::fprintf(stderr, "FAILED: %d check(s)\n", g_failures);

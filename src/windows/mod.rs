@@ -1,5 +1,6 @@
 mod autostart;
 mod clipboard;
+mod download;
 mod runtime;
 mod settings;
 mod tray;
@@ -12,6 +13,8 @@ pub fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config_path = config::path()?;
     match args.first().map(String::as_str) {
+        #[cfg(feature = "settings-preview")]
+        Some("__settings-preview") => settings::preview()?,
         Some("__settings" | "__menu") => {
             let menu = (args[0] == "__menu").then(|| {
                 (

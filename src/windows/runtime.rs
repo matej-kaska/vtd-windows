@@ -759,11 +759,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, w: WPARAM, l: LPARAM) ->
 
 impl App {
     fn update_preferences(&mut self, cfg: Config) {
-        if self.cfg.language != cfg.language {
-            // The next worker reads the committed language from disk.
+        if self.cfg.language != cfg.language || self.cfg.model != cfg.model {
+            // The next worker reads the committed model and language from disk.
             let _ = self.tx.send(Request::Unload);
         }
         self.cfg.language = cfg.language;
+        self.cfg.model = cfg.model;
         self.cfg.trigger_key = cfg.trigger_key;
         self.cfg.toggle_key = cfg.toggle_key;
         self.cfg.replay_key = cfg.replay_key;
@@ -1335,6 +1336,11 @@ mod tests {
         assert!(jobs.try_recv().is_err()); // A shortcut edit retains the warm engine.
         preferences.language = if app.cfg.language == "de" { "cs" } else { "de" }.into();
         app.update_preferences(preferences);
+        assert!(matches!(jobs.try_recv().unwrap(), Request::Unload));
+        let mut preferences = app.cfg.clone();
+        preferences.model = std::path::Path::new("models").join(vtd::models::MODELS[1].file);
+        app.update_preferences(preferences.clone());
+        assert_eq!(app.cfg.model, preferences.model);
         assert!(matches!(jobs.try_recv().unwrap(), Request::Unload));
         assert_eq!(app.last, "Příliš žluťoučký kůň.");
     }

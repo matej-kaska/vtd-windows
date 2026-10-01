@@ -7,7 +7,7 @@ $bundle = Join-Path $httpRoot 'bundle'
 $downloadDir = Join-Path $testRoot 'download'
 New-Item -ItemType Directory -Force $httpRoot,$downloadDir | Out-Null
 $fixture = [byte[]]::new(4096)
-$fixture[0]=108; $fixture[1]=109; $fixture[2]=103; $fixture[3]=103
+$fixture[0]=71; $fixture[1]=71; $fixture[2]=85; $fixture[3]=70
 for ($i=4; $i -lt $fixture.Length; $i++) { $fixture[$i] = $i % 251 }
 [IO.File]::WriteAllBytes((Join-Path $httpRoot 'model.bin'),$fixture)
 [IO.File]::WriteAllText((Join-Path $httpRoot 'invalid.bin'),'<html>This is not a speech model.</html>')
@@ -27,6 +27,7 @@ function Assert-True([bool]$Condition,[string]$Message) {
 function Install-Case([string]$Name,[string]$Destination,[hashtable]$Options,[bool]$Success=$true,[string]$ExpectedError='') {
     $ini = Join-Path $testRoot "$Name.ini"
     $settings = @{Launch='0';Autostart='0'}
+    if (-not (Test-Path (Join-Path $Destination 'vtd.json'))) { $settings.Language='cs'; $settings.ModelPreset='canary' }
     foreach ($key in $Options.Keys) { $settings[$key] = $Options[$key] }
     $text = "[Settings]`r`n" + (($settings.Keys | Sort-Object | ForEach-Object { "$_=$($settings[$_])" }) -join "`r`n") + "`r`n"
     [IO.File]::WriteAllText($ini,$text,[Text.Encoding]::Unicode)
@@ -69,6 +70,9 @@ try {
         Install-Case "invalid-shortcut-$invalid" $target @{HoldKey=$invalid;ModelSource='default'} $false 'Choose a key, optionally with Ctrl, Shift or Alt.'
     }
     Install-Case 'duplicate-shortcuts' $target @{HoldKey='120';ToggleKey='120';ModelSource='default'} $false 'Each action must use a different key.'
+    Install-Case 'invalid-preset' $target @{ModelSource='default';ModelPreset='unknown'} $false 'Choose a valid model preset.'
+    Install-Case 'canary-rejects-auto' $target @{ModelSource='default';ModelPreset='canary';Language='auto'} $false 'This model does not support'
+    Install-Case 'parakeet-rejects-japanese' $target @{ModelSource='default';ModelPreset='parakeet';Language='ja'} $false 'This model does not support'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $target 'vtd.exe'))) 'Invalid preferences installed application files'
 
     $payload = Join-Path $bundle 'vtd-runtime-x64.zip'
@@ -86,7 +90,7 @@ try {
     $configPath = Join-Path $target 'vtd.json'
     $config = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
     Assert-True ($config.trigger_key -eq 122 -and $config.toggle_key -eq 123 -and $config.replay_key -eq 124 -and $config.language -eq 'en' -and $config.mute_output) 'Preferences were not saved'
-    $expectedModelHash = if ($RealModelDownload) { '394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2' } else { $modelHash }
+    $expectedModelHash = if ($RealModelDownload) { '49e0a67e219bec95a254c2348460b6350e75a7ac6f93a131e48244b4c7cb53b9' } else { $modelHash }
     Assert-True ((Get-FileHash (Join-Path $target $config.model)).Hash -eq $expectedModelHash) 'Default model hash differs'
     Assert-True ((Get-ItemPropertyValue $runKey 'VTD Installer Test') -eq ('"' + (Join-Path $target 'vtd.exe') + '" run')) 'Autostart entry differs'
     Assert-True ((Get-ChildItem -LiteralPath $target -Filter *.ps1).Count -eq 0) 'Installed runtime contains PowerShell scripts'
@@ -109,9 +113,9 @@ try {
     $before = [IO.File]::ReadAllBytes($configPath)
     Install-Case 'model-hash-failure' $target @{ModelSource='url';ModelUrl="$baseUrl/model.bin";ModelHash=('0'*64)} $false 'Model SHA-256 mismatch.'
     Assert-True ([Convert]::ToBase64String([IO.File]::ReadAllBytes($configPath)) -eq [Convert]::ToBase64String($before)) 'Failed download modified the existing config'
-    Install-Case 'invalid-model-header' $target @{ModelSource='url';ModelUrl="$baseUrl/invalid.bin";ModelHash=''} $false 'This file is not a whisper.cpp GGML model.'
+    Install-Case 'invalid-model-header' $target @{ModelSource='url';ModelUrl="$baseUrl/invalid.bin";ModelHash=''} $false 'This file is not a compatible GGML or GGUF speech model.'
     Install-Case 'missing-model-url' $target @{ModelSource='url';ModelUrl="$baseUrl/not-found.bin";ModelHash=''} $false 'Model download failed:'
-    $runtimeFiles = @('vtd.exe','vtd-engine.exe','msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','vtd.json','Uninstall.exe')
+    $runtimeFiles = @('vtd.exe','vtd-engine.exe','vtd-transcribe.exe','msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','vtd.json','Uninstall.exe')
     $beforeHashes = @{}
     foreach ($name in $runtimeFiles) { $beforeHashes[$name] = (Get-FileHash (Join-Path $target $name)).Hash }
     $lockedFile = [IO.File]::Open((Join-Path $target 'msvcp140.dll'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)
@@ -125,6 +129,26 @@ try {
     Assert-True ((Test-Path -LiteralPath $configPath) -and (Test-Path -LiteralPath (Join-Path $target $config.model))) 'Uninstall removed retained settings/model'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $target 'vtd.exe'))) 'Uninstall kept the executable'
     $cases.Add([ordered]@{Case='uninstall-keeps-model-and-config';ExitCode=0})
+
+    # Verify the other presets offline against real, hashed local models when available.
+    $catalog = Get-Content "$root\assets\models.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+    foreach ($preset in $catalog.models | Where-Object { $_.id -ne 'canary' }) {
+        $source = Join-Path $root $(if ($preset.id -eq 'whisper') { 'models\' + $preset.file } else { 'artifacts\asr-comparison\models\' + $preset.file })
+        if (-not (Test-Path -LiteralPath $source)) { continue }
+        $destination = Join-Path $testRoot ('preset-' + $preset.id)
+        $modelDir = Join-Path $destination 'models'
+        New-Item -ItemType Directory -Force $modelDir | Out-Null
+        New-Item -ItemType HardLink -Path (Join-Path $modelDir $preset.file) -Target $source | Out-Null
+        Install-Case ('preset-' + $preset.id) $destination @{ModelSource='default';ModelPreset=$preset.id;Language='auto'}
+        $savedPreset = Get-Content (Join-Path $destination 'vtd.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($savedPreset.model -eq ('models\' + $preset.file)) 'Wrong preset model path'
+        Install-Case ('upgrade-' + $preset.id) $destination @{}
+        $upgradedPreset = Get-Content (Join-Path $destination 'vtd.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+        Assert-True ($upgradedPreset.model -eq $savedPreset.model -and $upgradedPreset.language -eq 'auto') 'Upgrade changed model or language'
+        Uninstall-Case $destination $true
+        Assert-True (-not (Test-Path (Join-Path $modelDir $preset.file))) 'Purge kept a managed preset'
+        Assert-True (Test-Path -LiteralPath $source) 'Purge removed source model'
+    }
 
     $custom = Join-Path $testRoot 'custom model download'
     Install-Case 'custom-url-and-hash' $custom @{ModelSource='url';ModelUrl="$baseUrl/model.bin";ModelHash=$modelHash}

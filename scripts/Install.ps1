@@ -6,15 +6,17 @@ if (-not (Test-Path -LiteralPath $exe -PathType Leaf)) {
 $init = Start-Process -FilePath $exe -ArgumentList 'init' -WindowStyle Hidden -Wait -PassThru
 if ($init.ExitCode -ne 0) { throw 'Cannot initialize VTD. Use a writable folder.' }
 $config = Get-Content -LiteralPath (Join-Path $PSScriptRoot 'vtd.json') -Raw | ConvertFrom-Json
-$model = 'models/ggml-large-v3-turbo-q5_0.bin'
+$model = 'models/canary-1b-v2-Q4_K_M.gguf'
 if ($config.model) { $model = $config.model }
 if (-not [IO.Path]::IsPathRooted($model)) { $model = Join-Path $PSScriptRoot $model }
 if (-not (Test-Path -LiteralPath $model -PathType Leaf)) {
-    if ([IO.Path]::GetFileName($model) -ne 'ggml-large-v3-turbo-q5_0.bin') {
-        throw "Configured model is missing: $model. Automatic setup downloads only the default Q5 model."
+    $catalog = Get-Content (Join-Path $PSScriptRoot 'models.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    $preset = $catalog.models | Where-Object { $_.file -eq [IO.Path]::GetFileName($model) }
+    if (-not $preset) {
+        throw "Configured custom model is missing: $model."
     }
-    Write-Host 'Downloading the Q5 speech model (about 574 MB). Internet is needed for this first setup only.'
-    & (Join-Path $PSScriptRoot 'download-model.ps1') -Quality q5_0 -Destination (Split-Path $model -Parent)
+    Write-Host "Downloading $($preset.name). Internet is needed for this first setup only."
+    & (Join-Path $PSScriptRoot 'download-model.ps1') -Model $preset.id -Destination (Split-Path $model -Parent)
     if (-not (Test-Path -LiteralPath $model -PathType Leaf)) { throw 'Model download did not produce the expected file.' }
 }
 

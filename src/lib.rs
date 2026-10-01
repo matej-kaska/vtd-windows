@@ -8,11 +8,17 @@ pub mod config;
 #[path = "windows/languages.rs"]
 pub mod languages;
 #[cfg(windows)]
+#[path = "windows/models.rs"]
+pub mod models;
+#[cfg(windows)]
 #[path = "windows/output.rs"]
 mod output;
 #[cfg(windows)]
 #[path = "windows/recording.rs"]
 pub mod recording;
+#[cfg(windows)]
+#[path = "windows/text.rs"]
+pub mod text;
 
 #[cfg(windows)]
 pub fn attach_console() {

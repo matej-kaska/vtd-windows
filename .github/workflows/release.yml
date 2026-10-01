@@ -105,8 +105,12 @@ jobs:
                   raise SystemExit('Published releases are immutable; create a new version tag')
           else:
               pathlib.Path('notes.md').write_text(
-                  'Small per-user Windows installer with shortcut, language, startup and mute settings.\n\n'
-                  'Download the recommended Whisper model, use a custom HTTPS URL, or select an existing model.\n\n'
+                  'Offline Windows GPU dictation with Canary, Parakeet and Whisper over Vulkan.\n\n'
+                  'Choose, download, switch and remove preset models in native Settings. '
+                  'Setup also accepts custom HTTPS URLs and existing model files.\n\n'
+                  'The native Canary/Parakeet engine uses compact allocation metadata and bounded '
+                  'temporary buffers. Existing preferences and selected models are preserved.\n\n'
+                  f"Model comparisons and measurement limits: https://github.com/{os.environ['GH_REPO']}/blob/{tag}/docs/model-engine.md\n\n"
                   'Download VTD-Setup.exe for installation, or vtd-windows-x64.zip for portable use. '
                   'The installer downloads its matching vtd-runtime-x64.zip automatically. '
                   'Code signing is not included in this release.\n', encoding='utf-8')

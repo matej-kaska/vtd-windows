@@ -5,6 +5,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
 pub struct Config {
+    #[serde(default = "legacy_model")]
     pub model: PathBuf,
     pub microphone: Option<String>,
     pub gpu: Option<usize>,
@@ -22,13 +23,24 @@ pub struct Config {
     pub threads: i32,
 }
 
+// Older hand-written configurations may omit model; keep their Whisper default.
+fn legacy_model() -> PathBuf {
+    Path::new("models").join(crate::models::MODELS[2].file)
+}
+
 impl Default for Config {
     fn default() -> Self {
+        let language = crate::languages::system_language();
+        let model = if crate::models::MODELS[0].supports_language(language) {
+            &crate::models::MODELS[0]
+        } else {
+            &crate::models::MODELS[2]
+        };
         Self {
-            model: "models/ggml-large-v3-turbo-q5_0.bin".into(),
+            model: Path::new("models").join(model.file),
             microphone: None,
             gpu: None,
-            language: crate::languages::system_language().into(),
+            language: language.into(),
             trigger_key: 0x77,
             toggle_key: 0x78,
             replay_key: 0x79,
@@ -74,6 +86,14 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<()> {
+        if let Some(model) = crate::models::from_path(&self.model) {
+            ensure!(
+                model.supports_language(&self.language),
+                "{} does not support language '{}'. Choose a supported speech language (Canary requires an explicit language), or use Whisper.",
+                model.name,
+                self.language
+            );
+        }
         for key in [self.trigger_key, self.toggle_key, self.replay_key] {
             ensure!(
                 valid_shortcut(key),
@@ -123,6 +143,14 @@ impl Config {
         object.insert("replay_key".into(), self.replay_key.into());
         object.insert("language".into(), self.language.clone().into());
         object.insert("mute_output".into(), self.mute_output.into());
+        let previous = Self::load(path)?;
+        if previous.model != self.model {
+            let model = self
+                .model
+                .strip_prefix(path.parent().unwrap_or(Path::new(".")))
+                .unwrap_or(&self.model);
+            object.insert("model".into(), serde_json::to_value(model)?);
+        }
         Self::deserialize(&value)?.validate()?;
         // Preserve unrelated preferences and the original relative model path.
         let temp = path.with_extension("json.tmp");
@@ -153,6 +181,30 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn legacy_default_and_model_switch_preserve_preferences() {
+        let dir = std::env::temp_dir().join(format!("vtd-model-config-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("vtd.json");
+        std::fs::write(&path, br#"{"language":"auto","threads":7}"#).unwrap();
+        let mut cfg = Config::load(&path).unwrap();
+        assert_eq!(cfg.model, dir.join(legacy_model()));
+        cfg.model = crate::models::MODELS[0].path(&path);
+        assert!(cfg.save_preferences(&path).is_err());
+        cfg.language = "cs".into();
+        cfg.save_preferences(&path).unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
+        assert_eq!(
+            saved["model"],
+            serde_json::to_value(Path::new("models").join(crate::models::MODELS[0].file)).unwrap()
+        );
+        assert_eq!(saved["threads"], 7);
+        assert_eq!(Config::load(&path).unwrap().model, cfg.model);
+        std::fs::remove_file(path).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn custom_shortcuts_validate_and_round_trip() {

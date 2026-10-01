@@ -3,6 +3,28 @@ Third-party notices for VTD Windows
 Windows runtime DLLs are Microsoft Visual C++ Redistributable components.
 Whisper model weights: MIT, Copyright (c) 2022 OpenAI.
 
+transcribe.cpp at e85b30edac87533168863283c1e595bf39bd7d15
+https://github.com/handy-computer/transcribe.cpp
+MIT License, Copyright (c) 2026 The transcribe.cpp authors
+[Full text: L002]
+VTD modifies model registration and Vulkan shader storage, lifetime and waits.
+
+GGML bundled with transcribe.cpp
+MIT License, Copyright (c) 2023-2026 The ggml authors
+[Full text: L002]
+
+Optional Canary-1B-v2 and Parakeet-TDT-0.6B-v3 model weights
+Creator: NVIDIA
+https://huggingface.co/nvidia/canary-1b-v2
+https://huggingface.co/nvidia/parakeet-tdt-0.6b-v3
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+License text: https://creativecommons.org/licenses/by/4.0/legalcode
+GGUF conversion and Q4_K_M quantization by handy-computer:
+https://huggingface.co/handy-computer/canary-1b-v2-gguf
+https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf
+These converted and quantized weights are derived from the NVIDIA models;
+VTD downloads the published GGUF files without further weight changes.
+
 Repeated license texts appear once in the SHARED LICENSE TEXTS section below.
 Each [Full text: Lnnn] reference incorporates that complete text for the
 component and source license file listed above it. Copyright notices and

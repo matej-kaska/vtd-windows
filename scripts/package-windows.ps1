@@ -1,18 +1,22 @@
-param([string]$BuildDir = "$env:SystemDrive\vtd-build", [switch]$WithModel, [string]$OutputDir)
+param([string]$BuildDir = "$env:SystemDrive\vtd-build", [switch]$WithModel, [string]$OutputDir, [string]$ArchivePath)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $output = if ($OutputDir) { [IO.Path]::GetFullPath($OutputDir) } else { Join-Path $root 'dist\vtd-windows' }
 New-Item -ItemType Directory -Force $output | Out-Null
 Copy-Item "$BuildDir\release\vtd.exe" $output
 Copy-Item "$BuildDir\release\vtd-engine.exe" $output
+Copy-Item "$BuildDir\release\vtd-transcribe.exe" $output
 # Do not generate or distribute this machine's preferences. The recipient's
 # first run creates vtd.json using their Windows display language.
 Copy-Item "$root\LICENSE", "$root\README.md" $output
+New-Item -ItemType Directory -Force (Join-Path $output 'docs') | Out-Null
+Copy-Item -LiteralPath (Join-Path $root 'docs\model-engine.md') -Destination (Join-Path $output 'docs\model-engine.md')
 foreach ($name in @('WINDOWS.md', 'BENCHMARKS.md')) {
     $obsolete = Join-Path $output $name
     if (Test-Path -LiteralPath $obsolete) { Remove-Item -LiteralPath $obsolete }
 }
 Copy-Item "$root\scripts\download-model.ps1" $output
+Copy-Item "$root\assets\models.json" $output
 foreach ($name in @('Install.ps1', 'Uninstall.ps1', 'Autostart.ps1')) {
     Copy-Item -LiteralPath (Join-Path "$root\scripts" $name) -Destination $output
 }
@@ -29,20 +33,31 @@ foreach ($name in @('concrt140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll', 'msvcp1
 }
 Copy-Item "$root\THIRD_PARTY_LICENSES.txt" $output
 if ($WithModel) {
+    # Include the preset selected by this build's first-run language defaults.
+    $hadConfig = Test-Path (Join-Path $output 'vtd.json')
+    $init = Start-Process -FilePath (Join-Path $output 'vtd.exe') -ArgumentList 'init' -WindowStyle Hidden -Wait -PassThru
+    if ($init.ExitCode -ne 0) { throw 'Cannot initialize package defaults.' }
+    $config = Get-Content (Join-Path $output 'vtd.json') -Raw -Encoding UTF8 | ConvertFrom-Json
+    if (-not $hadConfig) { Remove-Item -LiteralPath (Join-Path $output 'vtd.json') }
+    $catalog = Get-Content "$root\assets\models.json" -Raw -Encoding UTF8 | ConvertFrom-Json
+    $preset = $catalog.models | Where-Object { $_.file -eq [IO.Path]::GetFileName($config.model) }
+    if (-not $preset) { throw 'WithModel requires a catalog preset.' }
     New-Item -ItemType Directory -Force "$output\models" | Out-Null
-    $source = Join-Path $root 'models\ggml-large-v3-turbo-q5_0.bin'
-    $target = Join-Path $output 'models\ggml-large-v3-turbo-q5_0.bin'
+    $modelRelative = 'models/' + $preset.file
+    $source = Join-Path $root $modelRelative
+    $target = Join-Path $output $modelRelative
     if (-not (Test-Path -LiteralPath $source -PathType Leaf)) { throw 'Download the model first.' }
     if (Test-Path -LiteralPath $target) { Remove-Item -LiteralPath $target }
     try { New-Item -ItemType HardLink -Path $target -Target $source -ErrorAction Stop | Out-Null }
     catch { Copy-Item -LiteralPath $source -Destination $target }
 }
 # Explicit contents keep old models and other leftover files out of future ZIPs.
-$files = @('vtd.exe', 'vtd-engine.exe', 'LICENSE', 'README.md', 'THIRD_PARTY_LICENSES.txt',
+$files = @('vtd.exe', 'vtd-engine.exe', 'vtd-transcribe.exe', 'models.json', 'LICENSE', 'README.md', 'THIRD_PARTY_LICENSES.txt',
+    'docs/model-engine.md',
     'download-model.ps1', 'Install.ps1', 'Uninstall.ps1', 'Autostart.ps1',
     'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
-if ($WithModel) { $files += 'models/ggml-large-v3-turbo-q5_0.bin' }
-$archive = Join-Path $root 'dist\vtd-windows-x64.zip'
+if ($WithModel) { $files += $modelRelative }
+$archive = if ($ArchivePath) { [IO.Path]::GetFullPath($ArchivePath) } else { Join-Path $root 'dist\vtd-windows-x64.zip' }
 $temporary = "$archive.tmp"
 $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
 if (-not $sevenZip -and (Test-Path "$env:ProgramFiles\7-Zip\7z.exe")) { $sevenZip = "$env:ProgramFiles\7-Zip\7z.exe" }

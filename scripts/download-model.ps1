@@ -1,6 +1,7 @@
 param(
     [ValidateSet('q5_0','q8_0','f16')][string]$Quality = 'q5_0',
-    [string]$Destination
+    [string]$Destination,
+    [ValidateSet('canary','parakeet','whisper')][string]$Model
 )
 $ErrorActionPreference = 'Stop'
 if (-not $Destination) {
@@ -13,10 +14,18 @@ $models = @{
     f16 = @('ggml-large-v3-turbo.bin', '1fc70f774d38eb169993ac391eea357ef47c88757ef72ee5943879b7e8e2bc69')
 }
 $name, $hash = $models[$Quality]
+$url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$name"
+if ($Model) {
+    $catalogPath = if (Test-Path (Join-Path $PSScriptRoot 'models.json')) { Join-Path $PSScriptRoot 'models.json' } else { Join-Path (Split-Path $PSScriptRoot -Parent) 'assets/models.json' }
+    $preset = (Get-Content $catalogPath -Raw -Encoding UTF8 | ConvertFrom-Json).models | Where-Object { $_.id -eq $Model }
+    $name = $preset.file
+    $hash = $preset.sha256
+    $url = $preset.url
+}
 New-Item -ItemType Directory -Force $Destination | Out-Null
 $path = Join-Path $Destination $name
 if ((Test-Path -LiteralPath $path) -and (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash -eq $hash) { Write-Output $path; return }
-curl.exe -L --fail --retry 3 --progress-bar --show-error "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/$name" -o "$path.part"
+curl.exe -L --fail --retry 3 --proto '=https' --proto-redir '=https' --progress-bar --show-error $url -o "$path.part"
 if ($LASTEXITCODE -ne 0) { throw 'Model download failed' }
 if ((Get-FileHash -LiteralPath "$path.part" -Algorithm SHA256).Hash -ne $hash) { throw 'Model SHA256 mismatch' }
 Move-Item -LiteralPath "$path.part" -Destination $path -Force

@@ -6,10 +6,15 @@ use std::{
 };
 
 pub fn command() -> Result<Command> {
-    let path = std::env::current_exe()?.with_file_name("vtd-engine.exe");
+    let cfg = vtd::config::Config::load(&vtd::config::path()?)?;
+    let name = match vtd::models::engine(&cfg.model) {
+        vtd::models::EngineKind::Whisper => "vtd-engine.exe",
+        vtd::models::EngineKind::Transcribe => "vtd-transcribe.exe",
+    };
+    let path = std::env::current_exe()?.with_file_name(name);
     ensure!(
         path.is_file(),
-        "Missing vtd-engine.exe; extract the complete VTD package"
+        "Missing {name}; extract the complete VTD package"
     );
     let mut command = Command::new(path);
     command.creation_flags(windows_sys::Win32::System::Threading::CREATE_NO_WINDOW);

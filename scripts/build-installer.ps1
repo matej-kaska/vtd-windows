@@ -34,8 +34,8 @@ if (@($requiredTools | Where-Object { -not (Test-Path -LiteralPath $_) }).Count)
 # unused CRT DLLs, or installer plugins in the installed application's payload.
 $stage = Join-Path $output 'runtime'
 New-Item -ItemType Directory -Force $stage | Out-Null
-$files = @('vtd.exe','vtd-engine.exe','msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','LICENSE','THIRD_PARTY_LICENSES.txt','INSTALLER_LICENSES.txt')
-foreach ($name in @('vtd.exe','vtd-engine.exe')) { Copy-Item -LiteralPath (Join-Path "$BuildDir\release" $name) -Destination $stage }
+$files = @('vtd.exe','vtd-engine.exe','vtd-transcribe.exe','msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','LICENSE','THIRD_PARTY_LICENSES.txt','INSTALLER_LICENSES.txt')
+foreach ($name in @('vtd.exe','vtd-engine.exe','vtd-transcribe.exe')) { Copy-Item -LiteralPath (Join-Path "$BuildDir\release" $name) -Destination $stage }
 foreach ($name in @('LICENSE','THIRD_PARTY_LICENSES.txt')) { Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage }
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vs = & $vswhere -latest -products '*' -property installationPath
@@ -93,6 +93,7 @@ foreach ($language in $languages) { [void]$generated.AppendLine('  ${If} $Speech
 foreach ($language in $languages) { [void]$generated.AppendLine('  ${If} $LangName == "' + $language.Groups[2].Value + '"'); [void]$generated.AppendLine('    StrCpy $SpeechLanguage "' + $language.Groups[1].Value + '"'); [void]$generated.AppendLine('  ${EndIf}') }
 [void]$generated.AppendLine('FunctionEnd')
 [IO.File]::WriteAllText((Join-Path $output 'languages.nsh'),$generated.ToString())
+& "$PSScriptRoot\installer-models.ps1" -OutputDir $output
 $installedKiB = [math]::Ceiling((($files | ForEach-Object { (Get-Item (Join-Path $stage $_)).Length } | Measure-Object -Sum).Sum + 128KB) / 1KB)
 $args = @('/V3',"/DCOMPRESSION=$Compression","/DOUTPUT_DIR=$output","/DTOOLS_DIR=$tools","/DAPP_VERSION=$($ReleaseTag.Substring(1))","/DVERSION_NUMBER=$($ReleaseTag.Substring(1).Split('-')[0]).0","/DPAYLOAD_URL=$PayloadUrl","/DPAYLOAD_SHA256=$hash","/DINSTALLED_KIB=$installedKiB")
 if ($TestHarness) { $args += '/DTEST_HARNESS' }

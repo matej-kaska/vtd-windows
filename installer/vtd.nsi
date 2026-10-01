@@ -43,9 +43,7 @@ VIAddVersionKey /LANG=1033 "FileDescription" "VTD online installer"
 VIAddVersionKey /LANG=1033 "FileVersion" "${APP_VERSION}"
 VIAddVersionKey /LANG=1033 "LegalCopyright" "VTD contributors"
 
-!define DEFAULT_MODEL "ggml-large-v3-turbo-q5_0.bin"
-!define /ifndef DEFAULT_URL "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/${DEFAULT_MODEL}"
-!define /ifndef DEFAULT_SHA "394221709cd5ad1f40c46e6031ca61bce88931e6e088c188294c6d5a55ffa7e2"
+!include "${OUTPUT_DIR}\model-defines.nsh"
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
 
 Var HoldKey
@@ -57,6 +55,10 @@ Var Mute
 Var Autostart
 Var Launch
 Var Source
+Var ModelPreset
+Var ModelTwoControl
+Var ModelThreeControl
+Var CustomControl
 Var ModelUrl
 Var ModelFile
 Var ModelHash
@@ -86,10 +88,12 @@ Var ConfigLoadedFrom
 
 !include "native.nsh"
 !include "${OUTPUT_DIR}\languages.nsh"
+!include "${OUTPUT_DIR}\models.nsh"
 
 Page directory "" DirectoryLeave
 Page custom PreferencesPage PreferencesLeave
-Page custom ModelPage ModelLeave
+Page custom ModelPage ModelCatalogLeave
+Page custom CustomModelPage ModelLeave
 Page instfiles
 UninstPage custom un.OptionsPage un.OptionsLeave
 UninstPage instfiles
@@ -160,6 +164,7 @@ Function DefaultPreferences
   StrCpy $Autostart 1
   StrCpy $Launch 1
   StrCpy $Source "default"
+  StrCpy $ModelPreset "canary"
   StrCpy $ModelUrl "${DEFAULT_URL}"
   StrCpy $ModelHash ""
   StrCpy $ModelFile ""
@@ -193,6 +198,7 @@ locale_done:
   ${EndSwitch}
   Call LanguageName
   Call LanguageCode
+  Call DefaultModelForLanguage
   IfSilent 0 +2
     StrCpy $Launch 0
 FunctionEnd
@@ -282,6 +288,7 @@ config_loaded:
     !insertmacro ReadOptional "Autostart" $Autostart
     !insertmacro ReadOptional "Launch" $Launch
     !insertmacro ReadOptional "ModelSource" $Source
+    !insertmacro ReadOptional "ModelPreset" $ModelPreset
     !insertmacro ReadOptional "ModelUrl" $ModelUrl
     !insertmacro ReadOptional "ModelFile" $ModelFile
     !insertmacro ReadOptional "ModelHash" $ModelHash
@@ -403,54 +410,108 @@ FunctionEnd
 Function ModelPage
   nsDialogs::Create 1018
   Pop $Page
-  ${NSD_CreateRadioButton} 0 2u 100% 12u "Download recommended model (574 MB)"
-  Pop $DefaultControl
-  ${NSD_CreateLabel} 12u 15u 95% 12u "Whisper large-v3-turbo Q5 - multilingual"
+  !insertmacro ModelChoices
+  ${NSD_CreateLabel} 0 99u 100% 27u "${MODEL_BENCHMARK}"
   Pop $0
-  ${NSD_CreateRadioButton} 0 31u 100% 12u "Download a model from a custom HTTPS link"
+  ${NSD_CreateRadioButton} 0 132u 100% 12u "Keep an existing model or use a custom download"
+  Pop $CustomControl
+  ${NSD_OnClick} $CustomControl ModelRadioClicked
+  ${If} $Source != "default"
+    ${NSD_Check} $CustomControl
+  ${ElseIf} $ModelPreset == "parakeet"
+    ${NSD_Check} $ModelTwoControl
+  ${ElseIf} $ModelPreset == "whisper"
+    ${NSD_Check} $ModelThreeControl
+  ${Else}
+    ${NSD_Check} $DefaultControl
+  ${EndIf}
+  nsDialogs::Show
+FunctionEnd
+
+Function ModelRadioClicked
+  Pop $0
+  ${NSD_Uncheck} $DefaultControl
+  ${NSD_Uncheck} $ModelTwoControl
+  ${NSD_Uncheck} $ModelThreeControl
+  ${NSD_Uncheck} $CustomControl
+  ${NSD_Check} $0
+FunctionEnd
+
+Function ModelCatalogLeave
+  ${NSD_GetState} $CustomControl $0
+  ${If} $0 == 1
+    ${If} $Source == "default"
+      StrCpy $Source "url"
+      ${If} $ModelFile != ""
+        StrCpy $Source "file"
+      ${EndIf}
+    ${EndIf}
+    Return
+  ${EndIf}
+  StrCpy $Source "default"
+  StrCpy $ModelPreset "canary"
+  ${NSD_GetState} $ModelTwoControl $0
+  ${If} $0 == 1
+    StrCpy $ModelPreset "parakeet"
+  ${EndIf}
+  ${NSD_GetState} $ModelThreeControl $0
+  ${If} $0 == 1
+    StrCpy $ModelPreset "whisper"
+  ${EndIf}
+  Call ValidateModel
+  ${If} $ErrorText != ""
+    MessageBox MB_OK|MB_ICONEXCLAMATION "$ErrorText"
+    Abort
+  ${EndIf}
+FunctionEnd
+
+Function CustomModelPage
+  ${If} $Source == "default"
+    Abort
+  ${EndIf}
+  nsDialogs::Create 1018
+  Pop $Page
+  ${NSD_CreateRadioButton} 0 4u 100% 12u "Download a model from a custom HTTPS link"
   Pop $UrlControl
-  ${NSD_CreateText} 12u 45u 95% 13u "$ModelUrl"
+  ${NSD_CreateText} 12u 19u 95% 13u "$ModelUrl"
   Pop $UrlEdit
-  ${NSD_CreateLabel} 12u 63u 40% 12u "SHA-256 (optional):"
+  ${NSD_CreateLabel} 12u 38u 40% 12u "SHA-256 (optional):"
   Pop $0
-  ${NSD_CreateText} 44% 61u 56% 13u "$ModelHash"
+  ${NSD_CreateText} 44% 36u 56% 13u "$ModelHash"
   Pop $HashEdit
-  ${NSD_CreateRadioButton} 0 80u 100% 12u "Use an existing model file (keep its location)"
+  ${NSD_CreateRadioButton} 0 61u 100% 12u "Use an existing model file (keep its location)"
   Pop $FileControl
-  ${NSD_CreateText} 12u 95u 72% 13u "$ModelFile"
+  ${NSD_CreateText} 12u 77u 72% 13u "$ModelFile"
   Pop $FileEdit
-  ${NSD_CreateButton} 79% 94u 21% 15u "Browse..."
+  ${NSD_CreateButton} 79% 76u 21% 15u "Browse..."
   Pop $0
   ${NSD_OnClick} $0 BrowseModel
-  ${NSD_CreateLabel} 0 112u 100% 12u "GGML .bin only. Default download is SHA-256 verified."
+  ${NSD_CreateLabel} 0 102u 100% 30u "Whisper GGML (.bin), Canary or Parakeet GGUF (.gguf). Preset models are verified with SHA-256."
   Pop $0
-  ${Switch} $Source
-    ${Case} "file"
-      ${NSD_Check} $FileControl
-      ${Break}
-    ${Case} "url"
-      ${NSD_Check} $UrlControl
-      ${Break}
-    ${Default}
-      ${NSD_Check} $DefaultControl
-  ${EndSwitch}
+  ${If} $Source == "file"
+    ${NSD_Check} $FileControl
+  ${Else}
+    ${NSD_Check} $UrlControl
+  ${EndIf}
   nsDialogs::Show
 FunctionEnd
 
 Function BrowseModel
   Pop $0
-  nsDialogs::SelectFileDialog open "$ModelFile" "Whisper models (*.bin)|*.bin|All files (*.*)|*.*"
+  nsDialogs::SelectFileDialog open "$ModelFile" "Speech models (*.bin;*.gguf)|*.bin;*.gguf|All files (*.*)|*.*"
   Pop $0
   ${If} $0 != ""
     ${NSD_SetText} $FileEdit $0
-    ${NSD_Uncheck} $DefaultControl
     ${NSD_Uncheck} $UrlControl
     ${NSD_Check} $FileControl
   ${EndIf}
 FunctionEnd
 
 Function ModelLeave
-  StrCpy $Source "default"
+  ${If} $Source == "default"
+    Return
+  ${EndIf}
+  StrCpy $Source "url"
   ${NSD_GetState} $UrlControl $0
   ${If} $0 == 1
     StrCpy $Source "url"
@@ -472,6 +533,7 @@ FunctionEnd
 Function ValidateModel
   StrCpy $ErrorText ""
   ${If} $Source == "default"
+    Call ValidateCatalogModel
     Return
   ${EndIf}
   ${If} $Source == "file"
@@ -508,6 +570,7 @@ FunctionEnd
 !macro RuntimeFiles ACTION
   !insertmacro ${ACTION} "vtd.exe"
   !insertmacro ${ACTION} "vtd-engine.exe"
+  !insertmacro ${ACTION} "vtd-transcribe.exe"
   !insertmacro ${ACTION} "msvcp140.dll"
   !insertmacro ${ACTION} "vcruntime140.dll"
   !insertmacro ${ACTION} "vcruntime140_1.dll"
@@ -594,9 +657,7 @@ extract_app:
     ${EndIf}
   ${Else}
     ${If} $Source == "default"
-      StrCpy $ModelUrl "${DEFAULT_URL}"
-      StrCpy $ModelHash "${DEFAULT_SHA}"
-      StrCpy $ModelPath "models\${DEFAULT_MODEL}"
+      Call SelectCatalogModel
     ${Else}
       StrCpy $ModelPath "models\custom-model.bin"
     ${EndIf}
@@ -638,12 +699,19 @@ model_ready:
   FileReadByte $0 $3
   FileReadByte $0 $4
   FileClose $0
-  ${If} $1 != 108
-  ${OrIf} $2 != 109
-  ${OrIf} $3 != 103
-  ${OrIf} $4 != 103
+  ${If} $1 == 108
+  ${AndIf} $2 == 109
+  ${AndIf} $3 == 103
+  ${AndIf} $4 == 103
+    Goto valid_model_header
+  ${EndIf}
+  ${If} $1 != 71
+  ${OrIf} $2 != 71
+  ${OrIf} $3 != 85
+  ${OrIf} $4 != 70
     Goto invalid_model
   ${EndIf}
+valid_model_header:
   nsJSON::Set "trigger_key" /value "$HoldKey"
   nsJSON::Set "toggle_key" /value "$ToggleKey"
   nsJSON::Set "replay_key" /value "$ReplayKey"
@@ -730,7 +798,7 @@ registration_failed:
   StrCpy $ErrorText "VTD files are installed, but Windows shortcuts or startup registration failed. Retry setup from the same folder."
   Goto install_failed
 invalid_model:
-  StrCpy $ErrorText "This file is not a whisper.cpp GGML model. Choose a compatible .bin file."
+  StrCpy $ErrorText "This file is not a compatible GGML or GGUF speech model."
   Goto install_failed
 config_write_failed:
   StrCpy $ErrorText "Cannot prepare the configuration. No application files were changed."
@@ -817,7 +885,7 @@ Section "Uninstall"
   ${EndIf}
   ${If} $RemoveData == 1
     Delete "$INSTDIR\vtd.json"
-    Delete "$INSTDIR\models\${DEFAULT_MODEL}"
+    !insertmacro DeletePresetModels
     Delete "$INSTDIR\models\custom-model.bin"
     RMDir "$INSTDIR\models"
   ${EndIf}
