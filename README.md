@@ -6,14 +6,17 @@
 
 <h1 align="center">VTD Windows</h1>
 
-<p align="center"><strong>Offline voice dictation, accelerated on your GPU.</strong></p>
+<p align="center"><strong>Leave it on. Dictate whenever you need it.</strong></p>
 
-**Idle tray after restart: 108 KiB (~0.11 MiB) private working set.** Measured locally over 30 seconds on Windows with no model loaded; CPU and disk I/O stayed idle. [Measurement details](docs/tray-memory.md#fresh-restart-v042).
+**Dictation you can leave running all day.** Start VTD with Windows and forget about it until you need to type. Hold **F8** or tap **F9**, speak, and your words go straight into the active text field. VTD is built to stay ready in the tray with a tiny idle footprint.
 
-Click a text field, speak, and VTD inserts the transcript. Choose **Canary, Parakeet or Whisper** in a native Windows app that lives in the system tray. Audio is processed on your computer; no account or cloud transcription service is needed.
+**About 0.1 MB of RAM while idle.** After a fresh restart, the tray measured **108 KiB (~0.11 MiB) of private resident RAM**, with **zero measured CPU time and disk I/O** over 30 seconds. The speech engine loads when you record and exits after 30 idle seconds, releasing its RAM and VRAM. [Measured footprint and limits](docs/tray-memory.md#fresh-restart-v042).
+
+Choose **Canary, Parakeet or Whisper** for GPU accelerated dictation. Audio stays on your computer; no account or cloud transcription service is needed. The microphone opens only when you start recording.
 
 [**Windows installer**](https://github.com/matej-kaska/vtd-windows/releases/latest/download/VTD-Setup.exe) · [Portable ZIP](https://github.com/matej-kaska/vtd-windows/releases/latest/download/vtd-windows-x64.zip) · [Models](#choose-a-model) · [Settings](#settings) · [RAM and VRAM](#resource-usage)
 
+- **Made to stay on**, with Windows startup, about 0.1 MB idle private RAM and recording on demand.
 - **AMD GPU acceleration through Vulkan**, tested on Radeon RX 7800 XT.
 - **Three downloadable models**, with speed, peak VRAM and Czech accuracy shown in setup and Settings.
 - **Hold or toggle to record**, with customizable shortcuts and replay of the last transcript.
