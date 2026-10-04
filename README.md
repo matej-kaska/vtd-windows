@@ -110,7 +110,7 @@ New configurations use the Windows display language; upgrades preserve the saved
 
 **Starting the tray does not load a model.** The native tray owns the shortcuts and last transcript; settings and recording run in temporary helper processes. Recording launches the appropriate engine so loading can overlap with speaking. After **30 seconds without work**, the engine and recording helper exit and release their process memory and GPU allocations. The timeout is configurable.
 
-The optimized native Windows tray measured **120 KiB private working set** and **1,020 KiB private commit** after opening and closing the real menu and settings. These are local observations, not fixed memory limits. See [tray footprint and verification](docs/tray-memory.md) for methodology, comparisons and limitations.
+After a fresh restart, the v0.4.2 tray measured **108 KiB private resident RAM (~0.11 MiB)**, **264 KiB total resident RAM including shared pages** and **1,020 KiB private committed memory**, with no model, menu or Settings open. Over the 30-second idle check it used **zero measured CPU time and disk I/O**. These are local observations, not fixed memory limits. See [tray footprint and verification](docs/tray-memory.md#fresh-restart-v042) for methodology, comparisons and limitations.
 
 Latest local measurements for the optimized Canary/Parakeet worker:
 
@@ -122,8 +122,6 @@ Latest local measurements for the optimized Canary/Parakeet worker:
 These are **whole-process working-set peaks**, including shared pages, on RX 7800 XT / Ryzen 7 7800X3D with four threads. They exclude the separate tray and do not represent VRAM or private commit. The five-minute fixture repeats a short recording; it is a throughput check, not a five-minute conversation. Driver state, system load and memory pressure affect the measurements.
 
 The latest allocator change saved another **1.2–1.45 MiB** of Canary's 30-second peak RAM without increasing sampled peak VRAM. All **100 Canary and 100 Parakeet Czech transcripts** remained identical to the preceding engine. A separate alternating timing check measured **0.319 s before / 0.324 s after** for 30-second Canary audio; this change does not establish a speed improvement. Private commit does not consistently fall. [Exact comparisons, tests and measurement limits](docs/model-engine.md#packed-graph-allocation-records-1-october-2026).
-
-The tray's earlier standalone measurement was **0.7–1.5 MiB private resident RAM**, or **6.6–13.1 MiB including shared pages**, with Settings closed. This is a different metric and lifecycle state from the engine table. Both native workers used zero additional CPU time during the latest three-second idle checks.
 
 The model-free application download is about **19 MB**, plus the selected model. RAM/VRAM figures use **MiB** (1,048,576 bytes); file downloads use **MB** (1,000,000 bytes).
 
