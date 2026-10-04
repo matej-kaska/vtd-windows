@@ -192,6 +192,10 @@ pub fn prepare(hwnd: HWND, text: &str, target: HWND) -> Result<()> {
     Ok(())
 }
 
+pub fn pending() -> bool {
+    PENDING.with(|pending| pending.borrow().is_some())
+}
+
 pub fn restore(hwnd: HWND) -> Result<()> {
     PENDING.with(|p| {
         let mut pending = p.borrow_mut();

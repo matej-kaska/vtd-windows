@@ -8,6 +8,8 @@
 
 <p align="center"><strong>Offline voice dictation, accelerated on your GPU.</strong></p>
 
+**Idle tray after restart: 108 KiB (~0.11 MiB) private working set.** Measured locally over 30 seconds on Windows with no model loaded; CPU and disk I/O stayed idle. [Measurement details](docs/tray-memory.md#fresh-restart-v042).
+
 Click a text field, speak, and VTD inserts the transcript. Choose **Canary, Parakeet or Whisper** in a native Windows app that lives in the system tray. Audio is processed on your computer; no account or cloud transcription service is needed.
 
 [**Windows installer**](https://github.com/matej-kaska/vtd-windows/releases/latest/download/VTD-Setup.exe) · [Portable ZIP](https://github.com/matej-kaska/vtd-windows/releases/latest/download/vtd-windows-x64.zip) · [Models](#choose-a-model) · [Settings](#settings) · [RAM and VRAM](#resource-usage)
@@ -45,7 +47,7 @@ powershell -ExecutionPolicy Bypass -File .\Install.ps1
 
 The script downloads and verifies the configured preset, starts VTD and enables startup at sign-in. New configurations choose Canary for a supported Windows display language, otherwise Whisper. Existing preferences and models are reused.
 
-The extracted folder is the installation. Keep `vtd.exe`, `vtd-engine.exe`, `vtd-transcribe.exe` and the included DLLs together. If you move the folder, exit VTD and run `Install.ps1` from its new location. Running `vtd.exe` directly starts the tray without changing autostart.
+The extracted folder is the installation. Keep `vtd.exe`, `vtd-helper.exe`, `vtd-engine.exe`, `vtd-transcribe.exe` and the included DLLs together. If you move the folder, exit VTD and run `Install.ps1` from its new location. Running `vtd.exe` directly starts the tray without changing autostart.
 
 </details>
 
@@ -103,7 +105,9 @@ New configurations use the Windows display language; upgrades preserve the saved
 
 ## Resource usage
 
-**Starting the tray does not load a model.** Recording launches the appropriate engine so loading can overlap with speaking. After **30 seconds without work**, the engine exits and releases its process memory and GPU allocations. The timeout is configurable.
+**Starting the tray does not load a model.** The native tray owns the shortcuts and last transcript; settings and recording run in temporary helper processes. Recording launches the appropriate engine so loading can overlap with speaking. After **30 seconds without work**, the engine and recording helper exit and release their process memory and GPU allocations. The timeout is configurable.
+
+The optimized native Windows tray measured **120 KiB private working set** and **1,020 KiB private commit** after opening and closing the real menu and settings. These are local observations, not fixed memory limits. See [tray footprint and verification](docs/tray-memory.md) for methodology, comparisons and limitations.
 
 Latest local measurements for the optimized Canary/Parakeet worker:
 

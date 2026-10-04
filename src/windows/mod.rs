@@ -1,8 +1,13 @@
 mod autostart;
+mod capture;
 mod clipboard;
 mod download;
+mod ipc;
+mod protocol;
 mod runtime;
 mod settings;
+#[cfg(test)]
+mod transcript;
 mod tray;
 mod worker;
 
@@ -13,6 +18,12 @@ pub fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let config_path = config::path()?;
     match args.first().map(String::as_str) {
+        Some("__bootstrap") => {
+            if let Err(e) = ipc::bootstrap() {
+                settings::error(std::ptr::null_mut(), &e);
+                return Err(e);
+            }
+        }
         #[cfg(feature = "settings-preview")]
         Some("__settings-preview") => settings::preview()?,
         Some("__settings" | "__menu") => {
@@ -57,7 +68,7 @@ pub fn main() -> Result<()> {
         Some("copy") => runtime::control("copy")?,
         Some(command @ ("status" | "pause" | "resume" | "settings")) => runtime::control(command)?,
         Some("stop") => runtime::control("stop")?,
-        None | Some("run") => {
+        Some("__session") => {
             let capture_next = match &args[args.len().min(1)..] {
                 [] => None,
                 [flag, path] if flag == "--capture-next" => Some(std::path::PathBuf::from(path)),
@@ -69,6 +80,7 @@ pub fn main() -> Result<()> {
             drop(args);
             runtime::run(cfg, capture_next)?;
         }
+        None | Some("run") => bail!("Use: vtd run [--capture-next FILE.wav]"),
         Some(other) => bail!("Unknown command: {other}; use vtd --help"),
     }
     Ok(())

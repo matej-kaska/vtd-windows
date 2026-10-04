@@ -1,13 +1,10 @@
 use anyhow::{Result, ensure};
 use std::{cell::Cell, ptr::null_mut};
 use windows_sys::Win32::{
-    Foundation::*,
-    Graphics::Gdi::*,
-    System::LibraryLoader::GetModuleHandleW,
-    UI::{Shell::*, WindowsAndMessaging::*},
+    Foundation::*, Graphics::Gdi::*, System::LibraryLoader::GetModuleHandleW,
+    UI::WindowsAndMessaging::*,
 };
 
-pub const EVENT: u32 = WM_APP + 4;
 thread_local! { static OPEN_SETTINGS: Cell<bool> = const { Cell::new(false) }; }
 
 // Menus initialize process-wide Windows UI caches. Own them in the same
@@ -120,35 +117,6 @@ fn symbol(kind: u8) -> HBITMAP {
             }
         }
         bitmap
-    }
-}
-
-pub fn update(hwnd: HWND, text: &str, operation: u32) -> bool {
-    unsafe {
-        let mut icon: NOTIFYICONDATAW = std::mem::zeroed();
-        icon.cbSize = std::mem::size_of_val(&icon) as u32;
-        icon.hWnd = hwnd;
-        icon.uID = 1;
-        icon.uFlags = NIF_TIP;
-        if operation == NIM_ADD {
-            icon.uFlags |= NIF_MESSAGE | NIF_ICON;
-            icon.uCallbackMessage = EVENT;
-            icon.hIcon = LoadImageW(
-                GetModuleHandleW(std::ptr::null()),
-                std::ptr::without_provenance(1),
-                IMAGE_ICON,
-                GetSystemMetrics(SM_CXSMICON),
-                GetSystemMetrics(SM_CYSMICON),
-                LR_SHARED,
-            ) as HICON;
-            if icon.hIcon.is_null() {
-                return false;
-            }
-        }
-        for (dest, unit) in icon.szTip.iter_mut().take(127).zip(text.encode_utf16()) {
-            *dest = unit;
-        }
-        Shell_NotifyIconW(operation, &icon) != 0
     }
 }
 

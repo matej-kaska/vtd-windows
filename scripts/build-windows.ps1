@@ -37,11 +37,13 @@ if ($Test) {
     cargo test --release --locked --features engine
     if ($LASTEXITCODE -ne 0) { throw 'Whisper tests failed' }
     cargo test --release --locked --features transcribe-engine --bin vtd-transcribe
+    if ($LASTEXITCODE -ne 0) { throw 'Transcribe tests failed' }
+    & "$PSScriptRoot\build-tray.ps1" -BuildDir $BuildDir -Test
 } else {
     cargo rustc --release --locked --features engine --bin vtd-engine -- -C lto=fat -C codegen-units=1 -C panic=abort -C link-arg=/DELAYLOAD:Cabinet.dll -C link-arg=/DELAYLOAD:vulkan-1.dll -C link-arg=delayimp.lib
     if ($LASTEXITCODE -ne 0) { throw 'Engine build failed' }
     cargo rustc --release --locked --features transcribe-engine --bin vtd-transcribe -- -C lto=fat -C codegen-units=1 -C panic=abort -C link-arg=/DELAYLOAD:Cabinet.dll -C link-arg=/DELAYLOAD:vulkan-1.dll -C link-arg=delayimp.lib
     if ($LASTEXITCODE -ne 0) { throw 'Transcribe engine build failed' }
-    cargo rustc --release --locked --bin vtd -- -C opt-level=s -C lto=fat -C codegen-units=1 -C panic=abort -C link-arg=/DELAYLOAD:comctl32.dll -C link-arg=/DELAYLOAD:ole32.dll -C link-arg=/DELAYLOAD:oleaut32.dll -C link-arg=/DELAYLOAD:combase.dll -C link-arg=delayimp.lib
+    & "$PSScriptRoot\build-tray.ps1" -BuildDir $BuildDir
 }
 if ($LASTEXITCODE -ne 0) { throw 'Cargo build/test failed' }

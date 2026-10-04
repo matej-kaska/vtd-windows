@@ -30,6 +30,7 @@ fn main() {
     println!("cargo:rerun-if-changed=assets/icon.ico");
     println!("cargo:rerun-if-changed=assets/settings.rc");
     println!("cargo:rerun-if-changed=assets/vtd.manifest");
+    println!("cargo:rerun-if-changed=assets/resident.manifest");
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
         return;
     }
@@ -86,5 +87,63 @@ fn main() {
             .expect("Windows SDK resource compiler is required")
             .success()
     );
-    println!("cargo:rustc-link-arg-bin=vtd={}", resource.display());
+    println!("cargo:rustc-link-arg-bin=vtd-helper={}", resource.display());
+    let resident_script = out.join("resident.rc");
+    let resident_resource = out.join("resident.res");
+    let tray_icon = out.join("tray.ico");
+    compact_tray_icon(&icon, &tray_icon);
+    std::fs::write(
+        &resident_script,
+        format!(
+            "1 ICON \"{}\"\n1 24 \"{assets}/resident.manifest\"\n",
+            tray_icon.to_string_lossy().replace('\\', "/")
+        ),
+    )
+    .unwrap();
+    assert!(
+        std::process::Command::new("rc.exe")
+            .arg("/nologo")
+            .arg("/fo")
+            .arg(&resident_resource)
+            .arg(&resident_script)
+            .status()
+            .expect("Windows SDK resource compiler is required")
+            .success()
+    );
+    println!(
+        "cargo:rustc-link-arg-bin=vtd={}",
+        resident_resource.display()
+    );
+    for argument in [
+        "/ENTRY:mainCRTStartup",
+        "/NODEFAULTLIB",
+        "/STACK:131072,4096",
+    ] {
+        println!("cargo:rustc-link-arg-bin=vtd={argument}");
+    }
+}
+
+// Preserve original pixels for every tray size up to 64 px (400% DPI).
+// The visible settings window and installer retain the full ICO.
+fn compact_tray_icon(source: &std::path::Path, target: &std::path::Path) {
+    let bytes = std::fs::read(source).unwrap();
+    assert_eq!(&bytes[..4], &[0, 0, 1, 0]);
+    let count = u16::from_le_bytes(bytes[4..6].try_into().unwrap()) as usize;
+    let entries: Vec<_> = (0..count)
+        .map(|index| &bytes[6 + index * 16..6 + (index + 1) * 16])
+        .filter(|entry| (1..=64).contains(&entry[0]) && (1..=64).contains(&entry[1]))
+        .collect();
+    assert!(!entries.is_empty());
+    let mut output = vec![0, 0, 1, 0];
+    output.extend_from_slice(&(entries.len() as u16).to_le_bytes());
+    let mut data = Vec::new();
+    for entry in &entries {
+        let size = u32::from_le_bytes(entry[8..12].try_into().unwrap()) as usize;
+        let start = u32::from_le_bytes(entry[12..16].try_into().unwrap()) as usize;
+        output.extend_from_slice(&entry[..12]);
+        output.extend_from_slice(&((6 + entries.len() * 16 + data.len()) as u32).to_le_bytes());
+        data.extend_from_slice(&bytes[start..start + size]);
+    }
+    output.extend_from_slice(&data);
+    std::fs::write(target, output).unwrap();
 }

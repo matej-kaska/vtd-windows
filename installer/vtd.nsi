@@ -569,6 +569,7 @@ FunctionEnd
 
 !macro RuntimeFiles ACTION
   !insertmacro ${ACTION} "vtd.exe"
+  !insertmacro ${ACTION} "vtd-helper.exe"
   !insertmacro ${ACTION} "vtd-engine.exe"
   !insertmacro ${ACTION} "vtd-transcribe.exe"
   !insertmacro ${ACTION} "msvcp140.dll"

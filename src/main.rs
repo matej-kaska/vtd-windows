@@ -12,7 +12,7 @@ mod keyboard;
 mod windows;
 
 #[cfg(windows)]
-fn main() {
+pub(crate) fn main() {
     vtd::attach_console();
     if let Err(e) = windows::main() {
         eprintln!("vtd: {e:#}");
@@ -21,7 +21,7 @@ fn main() {
 }
 
 #[cfg(target_os = "linux")]
-fn main() {
+pub(crate) fn main() {
     let args: Vec<String> = std::env::args().skip(1).collect();
 
     match args.first().map(String::as_str) {

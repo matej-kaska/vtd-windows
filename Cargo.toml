@@ -1,16 +1,30 @@
 [package]
 name = "vtd"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2024"
 license = "Unlicense"
 description = "Minimal offline Windows and Linux voice dictation"
 repository = "https://github.com/matej-kaska/vtd-windows"
 default-run = "vtd"
+autobins = false
 
 [features]
 engine = ["dep:whisper-rs"]
 transcribe-engine = []
 settings-preview = []
+windows-helper = []
+resident-test = []
+
+[[bin]]
+name = "vtd"
+path = "src/resident_main.rs"
+test = false
+bench = false
+
+[[bin]]
+name = "vtd-helper"
+path = "src/main.rs"
+required-features = ["windows-helper"]
 
 [[bin]]
 name = "vtd-engine"
@@ -35,11 +49,12 @@ windows = { version = "0.62", features = ["Win32_Media_Audio_Endpoints", "Win32_
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 whisper-rs = { version = "0.16", optional = true, features = ["vulkan", "raw-api"] }
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Ime", "Win32_System_LibraryLoader", "Win32_System_Console", "Win32_System_Threading", "Win32_System_Memory", "Win32_System_DataExchange", "Win32_System_Ole", "Win32_System_Registry", "Win32_Security", "Win32_Security_Cryptography", "Win32_Graphics_Gdi"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_Globalization", "Win32_UI_WindowsAndMessaging", "Win32_UI_Controls", "Win32_UI_Shell", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_Input_Ime", "Win32_System_LibraryLoader", "Win32_System_Console", "Win32_System_Environment", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_System_Memory", "Win32_System_SystemServices", "Win32_System_DataExchange", "Win32_System_Ole", "Win32_System_Registry", "Win32_Security", "Win32_Security_Cryptography", "Win32_Graphics_Gdi"] }
 
 [profile.release]
 lto = "thin"
 strip = true
+panic = "abort"
 
 [target.'cfg(windows)'.dev-dependencies]
 windows-sys = { version = "0.61", features = ["Win32_System_StationsAndDesktops"] }

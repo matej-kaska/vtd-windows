@@ -1,9 +1,46 @@
 use anyhow::{Result, ensure};
 use std::{
     io::{BufRead, BufReader, Write},
+    os::windows::io::AsRawHandle,
     os::windows::process::CommandExt,
     process::{Child, ChildStdin, ChildStdout, Command, Stdio},
 };
+use windows_sys::Win32::{
+    Foundation::{CloseHandle, HANDLE},
+    System::JobObjects::*,
+};
+
+struct ProcessJob(HANDLE);
+
+impl ProcessJob {
+    fn new() -> Result<Self> {
+        unsafe {
+            let handle = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            ensure!(!handle.is_null(), "Cannot create transcription process job");
+            let job = Self(handle);
+            let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            ensure!(
+                SetInformationJobObject(
+                    handle,
+                    JobObjectExtendedLimitInformation,
+                    (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+                    std::mem::size_of_val(&limits) as u32,
+                ) != 0,
+                "Cannot protect transcription process cleanup"
+            );
+            Ok(job)
+        }
+    }
+}
+
+impl Drop for ProcessJob {
+    fn drop(&mut self) {
+        unsafe {
+            CloseHandle(self.0);
+        }
+    }
+}
 
 pub fn command() -> Result<Command> {
     let cfg = vtd::config::Config::load(&vtd::config::path()?)?;
@@ -26,20 +63,28 @@ pub struct Worker {
     child: Child,
     input: ChildStdin,
     output: BufReader<ChildStdout>,
+    _job: ProcessJob,
 }
 
 impl Worker {
     pub fn spawn() -> Result<Self> {
+        let job = ProcessJob::new()?;
         let mut child = command()?
             .arg("__worker")
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
             .spawn()?;
+        if unsafe { AssignProcessToJobObject(job.0, child.as_raw_handle().cast()) } == 0 {
+            let _ = child.kill();
+            let _ = child.wait();
+            anyhow::bail!("Cannot attach the transcription process to its cleanup job");
+        }
         Ok(Self {
             input: child.stdin.take().unwrap(),
             output: BufReader::with_capacity(1024, child.stdout.take().unwrap()),
             child,
+            _job: job,
         })
     }
 

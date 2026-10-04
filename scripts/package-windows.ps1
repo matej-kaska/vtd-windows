@@ -4,13 +4,16 @@ $root = Split-Path $PSScriptRoot -Parent
 $output = if ($OutputDir) { [IO.Path]::GetFullPath($OutputDir) } else { Join-Path $root 'dist\vtd-windows' }
 New-Item -ItemType Directory -Force $output | Out-Null
 Copy-Item "$BuildDir\release\vtd.exe" $output
+Copy-Item "$BuildDir\release\vtd-helper.exe" $output
 Copy-Item "$BuildDir\release\vtd-engine.exe" $output
 Copy-Item "$BuildDir\release\vtd-transcribe.exe" $output
 # Do not generate or distribute this machine's preferences. The recipient's
 # first run creates vtd.json using their Windows display language.
 Copy-Item "$root\LICENSE", "$root\README.md" $output
 New-Item -ItemType Directory -Force (Join-Path $output 'docs') | Out-Null
-Copy-Item -LiteralPath (Join-Path $root 'docs\model-engine.md') -Destination (Join-Path $output 'docs\model-engine.md')
+foreach ($name in @('model-engine.md', 'tray-memory.md')) {
+    Copy-Item -LiteralPath (Join-Path $root "docs\$name") -Destination (Join-Path $output "docs\$name")
+}
 foreach ($name in @('WINDOWS.md', 'BENCHMARKS.md')) {
     $obsolete = Join-Path $output $name
     if (Test-Path -LiteralPath $obsolete) { Remove-Item -LiteralPath $obsolete }
@@ -52,8 +55,8 @@ if ($WithModel) {
     catch { Copy-Item -LiteralPath $source -Destination $target }
 }
 # Explicit contents keep old models and other leftover files out of future ZIPs.
-$files = @('vtd.exe', 'vtd-engine.exe', 'vtd-transcribe.exe', 'models.json', 'LICENSE', 'README.md', 'THIRD_PARTY_LICENSES.txt',
-    'docs/model-engine.md',
+$files = @('vtd.exe', 'vtd-helper.exe', 'vtd-engine.exe', 'vtd-transcribe.exe', 'models.json', 'LICENSE', 'README.md', 'THIRD_PARTY_LICENSES.txt',
+    'docs/model-engine.md', 'docs/tray-memory.md',
     'download-model.ps1', 'Install.ps1', 'Uninstall.ps1', 'Autostart.ps1',
     'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
 if ($WithModel) { $files += $modelRelative }

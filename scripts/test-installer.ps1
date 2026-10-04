@@ -115,7 +115,7 @@ try {
     Assert-True ([Convert]::ToBase64String([IO.File]::ReadAllBytes($configPath)) -eq [Convert]::ToBase64String($before)) 'Failed download modified the existing config'
     Install-Case 'invalid-model-header' $target @{ModelSource='url';ModelUrl="$baseUrl/invalid.bin";ModelHash=''} $false 'This file is not a compatible GGML or GGUF speech model.'
     Install-Case 'missing-model-url' $target @{ModelSource='url';ModelUrl="$baseUrl/not-found.bin";ModelHash=''} $false 'Model download failed:'
-    $runtimeFiles = @('vtd.exe','vtd-engine.exe','vtd-transcribe.exe','msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','vtd.json','Uninstall.exe')
+    $runtimeFiles = @('vtd.exe','vtd-helper.exe','vtd-engine.exe','vtd-transcribe.exe','msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','vtd.json','Uninstall.exe')
     $beforeHashes = @{}
     foreach ($name in $runtimeFiles) { $beforeHashes[$name] = (Get-FileHash (Join-Path $target $name)).Hash }
     $lockedFile = [IO.File]::Open((Join-Path $target 'msvcp140.dll'),[IO.FileMode]::Open,[IO.FileAccess]::Read,[IO.FileShare]::Read)

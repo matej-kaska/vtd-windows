@@ -321,6 +321,7 @@ fn commit(cfg: &Config, startup: bool) -> Result<()> {
         }
         return Err(error);
     }
+    super::ipc::preferences(PARENT.with(Cell::get), cfg)?;
     notify(runtime::SETTINGS_APPLY, 0)?;
     ACTIVE_MODEL.with(|active| *active.borrow_mut() = cfg.model.clone());
     Ok(())
@@ -958,7 +959,25 @@ mod tests {
             w: WPARAM,
             l: LPARAM,
         ) -> LRESULT {
-            if msg == runtime::SETTINGS_APPLY {
+            if msg == WM_COPYDATA && l != 0 {
+                let packet = unsafe {
+                    &*(l as *const windows_sys::Win32::System::DataExchange::COPYDATASTRUCT)
+                };
+                assert_eq!(packet.dwData, super::super::protocol::PREFERENCES);
+                assert_eq!(
+                    packet.cbData as usize,
+                    std::mem::size_of::<super::super::protocol::Preferences>()
+                );
+                let prefs = unsafe {
+                    std::ptr::read_unaligned(
+                        packet.lpData.cast::<super::super::protocol::Preferences>(),
+                    )
+                };
+                assert_eq!(prefs.trigger, 119);
+                assert_eq!(prefs.toggle, 120);
+                assert_eq!(prefs.replay, 121);
+                1
+            } else if msg == runtime::SETTINGS_APPLY {
                 APPLIED.with(|applied| applied.set(true));
                 1
             } else {

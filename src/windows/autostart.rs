@@ -23,7 +23,10 @@ pub fn snapshot() -> Result<Option<Entry>> {
 }
 
 pub fn enabled(entry: &Option<Entry>) -> Result<bool> {
-    let expected = format!("\"{}\" run", std::env::current_exe()?.display());
+    let expected = format!(
+        "\"{}\" run",
+        std::env::current_exe()?.with_file_name("vtd.exe").display()
+    );
     Ok(entry.as_ref().is_some_and(|entry| {
         let len = entry
             .data
@@ -40,7 +43,10 @@ pub fn set_enabled(enabled: bool) -> Result<()> {
     let entry = if enabled {
         Some(Entry {
             kind: REG_SZ,
-            data: wide(&format!("\"{}\" run", std::env::current_exe()?.display())),
+            data: wide(&format!(
+                "\"{}\" run",
+                std::env::current_exe()?.with_file_name("vtd.exe").display()
+            )),
         })
     } else {
         None

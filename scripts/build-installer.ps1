@@ -34,8 +34,8 @@ if (@($requiredTools | Where-Object { -not (Test-Path -LiteralPath $_) }).Count)
 # unused CRT DLLs, or installer plugins in the installed application's payload.
 $stage = Join-Path $output 'runtime'
 New-Item -ItemType Directory -Force $stage | Out-Null
-$files = @('vtd.exe','vtd-engine.exe','vtd-transcribe.exe','msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','LICENSE','THIRD_PARTY_LICENSES.txt','INSTALLER_LICENSES.txt')
-foreach ($name in @('vtd.exe','vtd-engine.exe','vtd-transcribe.exe')) { Copy-Item -LiteralPath (Join-Path "$BuildDir\release" $name) -Destination $stage }
+$files = @('vtd.exe','vtd-helper.exe','vtd-engine.exe','vtd-transcribe.exe','msvcp140.dll','vcruntime140.dll','vcruntime140_1.dll','LICENSE','THIRD_PARTY_LICENSES.txt','INSTALLER_LICENSES.txt')
+foreach ($name in @('vtd.exe','vtd-helper.exe','vtd-engine.exe','vtd-transcribe.exe')) { Copy-Item -LiteralPath (Join-Path "$BuildDir\release" $name) -Destination $stage }
 foreach ($name in @('LICENSE','THIRD_PARTY_LICENSES.txt')) { Copy-Item -LiteralPath (Join-Path $root $name) -Destination $stage }
 $vswhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $vs = & $vswhere -latest -products '*' -property installationPath
