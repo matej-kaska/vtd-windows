@@ -1,4 +1,4 @@
-param([string]$BuildDir = "$env:SystemDrive\vtd-build", [switch]$RealModelDownload)
+param([string]$BuildDir = "$env:SystemDrive\vtd-build", [switch]$RealModelDownload, [string]$ReduxModel)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path $PSScriptRoot -Parent
 $testRoot = Join-Path $root ('artifacts\installer-test-' + [guid]::NewGuid().ToString('N'))
@@ -72,7 +72,7 @@ try {
     Install-Case 'duplicate-shortcuts' $target @{HoldKey='120';ToggleKey='120';ModelSource='default'} $false 'Each action must use a different key.'
     Install-Case 'invalid-preset' $target @{ModelSource='default';ModelPreset='unknown'} $false 'Choose a valid model preset.'
     Install-Case 'canary-rejects-auto' $target @{ModelSource='default';ModelPreset='canary';Language='auto'} $false 'This model does not support'
-    Install-Case 'parakeet-rejects-japanese' $target @{ModelSource='default';ModelPreset='parakeet';Language='ja'} $false 'This model does not support'
+    Install-Case 'redux-rejects-japanese' $target @{ModelSource='default';ModelPreset='redux';Language='ja'} $false 'This model does not support'
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $target 'vtd.exe'))) 'Invalid preferences installed application files'
 
     $payload = Join-Path $bundle 'vtd-runtime-x64.zip'
@@ -94,6 +94,18 @@ try {
     Assert-True ((Get-FileHash (Join-Path $target $config.model)).Hash -eq $expectedModelHash) 'Default model hash differs'
     Assert-True ((Get-ItemPropertyValue $runKey 'VTD Installer Test') -eq ('"' + (Join-Path $target 'vtd.exe') + '" run')) 'Autostart entry differs'
     Assert-True ((Get-ChildItem -LiteralPath $target -Filter *.ps1).Count -eq 0) 'Installed runtime contains PowerShell scripts'
+    if ($ReduxModel) {
+        $redux = (Get-Content "$root/assets/models.json" -Raw -Encoding UTF8 | ConvertFrom-Json).models | Where-Object id -eq 'redux'
+        Assert-True ((Get-FileHash -LiteralPath $ReduxModel).Hash -eq $redux.sha256) 'Redux fixture hash differs'
+        Copy-Item -LiteralPath $ReduxModel -Destination (Join-Path "$target/models" $redux.file)
+        foreach ($language in @('cs','auto')) {
+            Install-Case "redux-preset-$language" $target @{ModelSource='default';ModelPreset='redux';Language=$language}
+            $saved = Get-Content -LiteralPath $configPath -Raw -Encoding UTF8 | ConvertFrom-Json
+            Assert-True ($saved.model -eq ('models\' + $redux.file) -and $saved.language -eq $language) 'Redux preset or language was not applied'
+            Assert-True ($saved.trigger_key -eq 122 -and $saved.mute_output) 'Redux selection changed unrelated preferences'
+        }
+        Install-Case 'restore-canary-after-redux' $target @{ModelSource='default';ModelPreset='canary';Language='en'}
+    }
     $requestsPath = Join-Path $httpRoot 'requests.log'
     $modelRequests = @(Select-String -Path $requestsPath -SimpleMatch 'GET /model.bin').Count
     Install-Case 'custom-shortcuts' $target @{HoldKey='800';ToggleKey='173';ReplayKey='544';ModelSource='default'}

@@ -1,7 +1,7 @@
 param(
     [ValidateSet('q5_0','q8_0','f16')][string]$Quality = 'q5_0',
     [string]$Destination,
-    [ValidateSet('canary','parakeet','whisper')][string]$Model
+    [ValidateSet('canary','redux','whisper')][string]$Model
 )
 $ErrorActionPreference = 'Stop'
 if (-not $Destination) {

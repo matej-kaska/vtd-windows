@@ -11,7 +11,7 @@ Copy-Item "$BuildDir\release\vtd-transcribe.exe" $output
 # first run creates vtd.json using their Windows display language.
 Copy-Item "$root\LICENSE", "$root\README.md" $output
 New-Item -ItemType Directory -Force (Join-Path $output 'docs') | Out-Null
-foreach ($name in @('model-engine.md', 'tray-memory.md')) {
+foreach ($name in @('model-engine.md', 'tray-memory.md', 'redux-benchmark.md')) {
     Copy-Item -LiteralPath (Join-Path $root "docs\$name") -Destination (Join-Path $output "docs\$name")
 }
 foreach ($name in @('WINDOWS.md', 'BENCHMARKS.md')) {
@@ -56,7 +56,7 @@ if ($WithModel) {
 }
 # Explicit contents keep old models and other leftover files out of future ZIPs.
 $files = @('vtd.exe', 'vtd-helper.exe', 'vtd-engine.exe', 'vtd-transcribe.exe', 'models.json', 'LICENSE', 'README.md', 'THIRD_PARTY_LICENSES.txt',
-    'docs/model-engine.md', 'docs/tray-memory.md',
+    'docs/model-engine.md', 'docs/tray-memory.md', 'docs/redux-benchmark.md',
     'download-model.ps1', 'Install.ps1', 'Uninstall.ps1', 'Autostart.ps1',
     'msvcp140.dll', 'vcruntime140.dll', 'vcruntime140_1.dll')
 if ($WithModel) { $files += $modelRelative }

@@ -12,7 +12,7 @@
 
 **About 0.1 MB of RAM while idle.** After a fresh restart, the tray measured **108 KiB (~0.11 MiB) of private resident RAM**, with **zero measured CPU time and disk I/O** over 30 seconds. The speech engine loads when you record and exits after 30 idle seconds, releasing its RAM and VRAM. [Measured footprint and limits](docs/tray-memory.md#fresh-restart-v042).
 
-Choose **Canary, Parakeet or Whisper** for GPU accelerated dictation. Audio stays on your computer; no account or cloud transcription service is needed. The microphone opens only when you start recording.
+Choose **Canary, Redux or Whisper** for GPU accelerated dictation. Audio stays on your computer; no account or cloud transcription service is needed. The microphone opens only when you start recording.
 
 [**Windows installer**](https://github.com/matej-kaska/vtd-windows/releases/latest/download/VTD-Setup.exe) · [Portable ZIP](https://github.com/matej-kaska/vtd-windows/releases/latest/download/vtd-windows-x64.zip) · [Models](#choose-a-model) · [Settings](#settings) · [RAM and VRAM](#resource-usage)
 
@@ -24,7 +24,7 @@ Choose **Canary, Parakeet or Whisper** for GPU accelerated dictation. Audio stay
 - **Automatic model unloading** after 30 idle seconds, leaving only the tray process.
 - **Native Rust and Win32 UI**, without a bundled browser or GUI framework.
 
-The model picker and Canary/Parakeet engine require **v0.4.1 or newer**. Existing installations keep their selected model and preferences.
+**v0.4.3 replaces the Parakeet preset with Redux.** Existing installations keep their selected model and preferences; older Parakeet files remain supported as custom models.
 
 ## Get started
 
@@ -56,19 +56,26 @@ The extracted folder is the installation. Keep `vtd.exe`, `vtd-helper.exe`, `vtd
 
 ## Choose a model
 
-All three presets use the selected Vulkan GPU. Canary offers the lowest Czech word error rate in our reference comparison; Parakeet is faster and uses less VRAM. Whisper remains available with its separate optimized whisper.cpp engine.
+All three presets use the selected Vulkan GPU. Canary offers the lowest Czech word error rate in our reference comparison; Redux offers a smaller download and uses less VRAM. Whisper remains available with its separate optimized whisper.cpp engine.
 
 | Preset | Warm 30 s audio | Peak dedicated VRAM | Czech WER ↓ | Download |
 | --- | ---: | ---: | ---: | ---: |
 | **Canary-1B-v2 Q4_K_M** | 0.34 s | 1,334 MiB | **9.78%** | 735 MB |
-| **Parakeet-TDT-0.6B-v3 Q4_K_M** | **0.20 s** | **677 MiB** | 12.73% | **485 MB** |
+| **Redux** | **0.21 s** | **563 MiB** | 12.32% | **159 MB** |
 | **Whisper large-v3-turbo Q5_0** | 0.66 s | 948 MiB | 12.22% | 574 MB |
 
 These are the reference results shown in the model picker: **RX 7800 XT / Ryzen 7 7800X3D**, four CPU threads, Czech selected, and 100 deterministic Czech FLEURS test clips with 1,964 reference words. Lower WER is better. Timing excludes model loading; VRAM includes loading and transcription. Results depend on the PC and recording. Q4_K_M was also compared with Q5_K_M and Q8_0 for Canary and Parakeet. [Benchmark and optimization details](docs/model-engine.md).
 
-**Language selection matters:** Canary requires an explicit supported language. Parakeet supports automatic detection across its 25 supported languages. Whisper provides the widest language selection and automatic detection. Settings checks compatibility before applying a change.
+**Language selection matters:** Canary requires an explicit supported language. Redux supports automatic detection across its 25 supported languages. Whisper provides the widest language selection and automatic detection. Settings checks compatibility before applying a change.
 
-Long Canary/Parakeet recordings are decoded in chunks of at most 30 seconds, preferring quiet boundaries. Every audio sample is retained, but words crossing a forced split can still be affected. A result reported as truncated by the native decoder is rejected instead of inserted.
+Redux replaces the original Parakeet preset and uses the fast Q4 Vulkan runtime.
+Its 159 MB ternary download expands losslessly for GPU inference; download size
+is not VRAM usage. Redux was measured in the integrated engine on 4 October;
+the other rows retain their earlier reference measurements. Background CPU
+load makes small timing differences inconclusive. [Redux comparison and integration](docs/redux-benchmark.md).
+Old Parakeet files still work as custom models and are not automatically deleted.
+
+Long Canary/Redux recordings are decoded in chunks of at most 30 seconds, preferring quiet boundaries. Every audio sample is retained, but words crossing a forced split can still be affected. A result reported as truncated by the native decoder is rejected instead of inserted.
 
 ## Dictate
 
@@ -112,12 +119,12 @@ New configurations use the Windows display language; upgrades preserve the saved
 
 After a fresh restart, the v0.4.2 tray measured **108 KiB private resident RAM (~0.11 MiB)**, **264 KiB total resident RAM including shared pages** and **1,020 KiB private committed memory**, with no model, menu or Settings open. Over the 30-second idle check it used **zero measured CPU time and disk I/O**. These are local observations, not fixed memory limits. See [tray footprint and verification](docs/tray-memory.md#fresh-restart-v042) for methodology, comparisons and limitations.
 
-Latest local measurements for the optimized Canary/Parakeet worker:
+Historical optimized worker measurements before Redux integration:
 
 | Model | Peak resident RAM, 30 s audio | Peak resident RAM, 5 min audio |
 | --- | ---: | ---: |
 | Canary Q4_K_M | **95.5–95.7 MiB** | **114.3–114.9 MiB** |
-| Parakeet Q4_K_M | **96.0–96.1 MiB** | **112.6–112.7 MiB** |
+| Legacy Parakeet Q4_K_M | **96.0–96.1 MiB** | **112.6–112.7 MiB** |
 
 These are **whole-process working-set peaks**, including shared pages, on RX 7800 XT / Ryzen 7 7800X3D with four threads. They exclude the separate tray and do not represent VRAM or private commit. The five-minute fixture repeats a short recording; it is a throughput check, not a five-minute conversation. Driver state, system load and memory pressure affect the measurements.
 
@@ -136,7 +143,7 @@ Most preferences are available in Settings. For microphone selection, GPU index,
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `language` | Windows display language | A supported language code such as `cs`, `en` or `de`; `auto` is available for Parakeet and Whisper. Chosen once when the file is created. |
+| `language` | Windows display language | A supported language code such as `cs`, `en` or `de`; `auto` is available for Redux and Whisper. Chosen once when the file is created. |
 | `microphone` | `null` | System default, or an exact device name from `vtd devices`. |
 | `gpu` | `null` | Prefer a discrete GPU, otherwise the first available GPU; set an index from `vtd devices` to choose explicitly. |
 | `trigger_key` | `119` | F8: hold to record. |
@@ -195,7 +202,7 @@ Requires Rust stable, Visual Studio C++ Build Tools and Windows SDK, CMake/Ninja
 
 Builds use **`C:\vtd-build`** and **`C:\vtd-transcribe-build`** to avoid Windows path-length limits. Override them with `-BuildDir` and `-NativeBuildDir`. Build the `engine` and `transcribe-engine` features separately: they contain different GGML versions and must not share a process.
 
-Whisper uses the patched whisper.cpp worker; Canary and Parakeet use a pinned, patched transcribe.cpp worker. Optimizations include bounded transfer buffers, compact tokenizer and graph metadata, losslessly compressed Vulkan shaders, and shorter-lived inference buffers. Model weights are not requantized by these runtime optimizations. [Native implementation and verification](docs/model-engine.md).
+Whisper uses the patched whisper.cpp worker; Canary and Redux use a pinned, patched transcribe.cpp worker. Optimizations include bounded transfer buffers, compact tokenizer and graph metadata, losslessly compressed Vulkan shaders, and shorter-lived inference buffers. Model weights are not requantized by these runtime optimizations. [Native implementation and verification](docs/model-engine.md).
 
 The default ZIP excludes models, personal preferences and development tools. `package-windows.ps1 -WithModel` includes the preset selected by the package configuration after it is downloaded. Use a separate `-OutputDir` if your normal package folder contains a running VTD.
 
@@ -205,6 +212,6 @@ GitHub Actions builds on manual dispatch or version tags; ordinary branch pushes
 
 This fork targets **Windows x64 with Vulkan**, tested on Radeon RX 7800 XT. Other Vulkan GPUs and AMD Strix Halo still need hardware-specific validation; shared-memory GPUs will have different memory usage. There is no macOS build yet. The original Linux source is retained; use upstream for Linux instructions.
 
-Based on [MQ37/vtd](https://github.com/MQ37/vtd), including the original mascot. Speech engines: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp). Canary and Parakeet are NVIDIA models; the supplied GGUF presets use handy-computer conversions.
+Based on [MQ37/vtd](https://github.com/MQ37/vtd), including the original mascot. Speech engines: [whisper.cpp](https://github.com/ggml-org/whisper.cpp) and [transcribe.cpp](https://github.com/handy-computer/transcribe.cpp). Canary is an NVIDIA model converted by handy-computer. Redux is Moondream's ternary derivative of NVIDIA Parakeet, converted to GGUF by Nairod785.
 
 VTD is released under the [Unlicense](LICENSE). Model and bundled-component licenses are listed in [THIRD_PARTY_LICENSES.txt](THIRD_PARTY_LICENSES.txt).

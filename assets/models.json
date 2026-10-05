@@ -40,14 +40,14 @@
       ]
     },
     {
-      "id": "parakeet",
-      "name": "Parakeet-TDT-0.6B-v3 Q4_K_M",
-      "file": "parakeet-tdt-0.6b-v3-Q4_K_M.gguf",
+      "id": "redux",
+      "name": "Redux",
+      "file": "parakeet-redux-0.6b-TQ1_Q8_0.gguf",
       "engine": "Transcribe",
-      "url": "https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf/resolve/90f082450fcbacdb54e5900c44ef697c9ea59622/parakeet-tdt-0.6b-v3-Q4_K_M.gguf",
-      "sha256": "b68557be1e3c40207fd7c4bd9d63f1d3316b963f15325bfb0cc16a8bb0ffd181",
-      "bytes": 485425504,
-      "details": "30 s audio: 0.20 s   |   Peak VRAM: 677 MiB   |   Czech WER: 12.73%",
+      "url": "https://huggingface.co/Nairod785/parakeet-redux-gguf/resolve/87cbc354ce32bc9fe144b5b7bcdd9c68538907a9/parakeet-redux-0.6b-TQ1_Q8_0.gguf",
+      "sha256": "74f43ba852479e86e29df92cdbc89aa8215c7e8070f711be424ff466415b6184",
+      "bytes": 159121504,
+      "details": "30 s audio: 0.21 s   |   Peak VRAM: 563 MiB   |   Czech WER: 12.32%",
       "autodetect": true,
       "languages": [
         "bg",

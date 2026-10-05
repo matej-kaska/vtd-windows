@@ -41,9 +41,11 @@ jobs:
             C:/vtd-build
             C:/vtd-transcribe-build
             .tools/transcribe.cpp
-          key: windows-rust-${{ steps.rust.outputs.version }}-${{ hashFiles('Cargo.lock', 'patches/windows/*.patch', 'scripts/*windows.cmake', 'scripts/build-windows.ps1', 'scripts/build-tray.ps1', 'scripts/build-transcribe.ps1', 'native/*.cpp') }}
+          # The cached checkout already contains our native patches. Reuse it
+          # only with the same patch/build inputs, including native headers.
+          key: windows-rust-${{ steps.rust.outputs.version }}-native-${{ hashFiles('patches/windows/*.patch', 'scripts/*windows.cmake', 'scripts/build-*.ps1', 'native/*.cpp', 'native/*.h') }}-${{ hashFiles('Cargo.lock') }}
           restore-keys: |
-            windows-rust-${{ steps.rust.outputs.version }}-
+            windows-rust-${{ steps.rust.outputs.version }}-native-${{ hashFiles('patches/windows/*.patch', 'scripts/*windows.cmake', 'scripts/build-*.ps1', 'native/*.cpp', 'native/*.h') }}-
       - name: Prepare build tools
         shell: pwsh
         run: |

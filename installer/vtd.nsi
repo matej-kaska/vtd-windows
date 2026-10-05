@@ -418,7 +418,7 @@ Function ModelPage
   ${NSD_OnClick} $CustomControl ModelRadioClicked
   ${If} $Source != "default"
     ${NSD_Check} $CustomControl
-  ${ElseIf} $ModelPreset == "parakeet"
+  ${ElseIf} $ModelPreset == "redux"
     ${NSD_Check} $ModelTwoControl
   ${ElseIf} $ModelPreset == "whisper"
     ${NSD_Check} $ModelThreeControl
@@ -452,7 +452,7 @@ Function ModelCatalogLeave
   StrCpy $ModelPreset "canary"
   ${NSD_GetState} $ModelTwoControl $0
   ${If} $0 == 1
-    StrCpy $ModelPreset "parakeet"
+    StrCpy $ModelPreset "redux"
   ${EndIf}
   ${NSD_GetState} $ModelThreeControl $0
   ${If} $0 == 1
@@ -486,7 +486,7 @@ Function CustomModelPage
   ${NSD_CreateButton} 79% 76u 21% 15u "Browse..."
   Pop $0
   ${NSD_OnClick} $0 BrowseModel
-  ${NSD_CreateLabel} 0 102u 100% 30u "Whisper GGML (.bin), Canary or Parakeet GGUF (.gguf). Preset models are verified with SHA-256."
+  ${NSD_CreateLabel} 0 102u 100% 30u "Whisper GGML (.bin), Canary or Redux/Parakeet GGUF (.gguf). Preset models are verified with SHA-256."
   Pop $0
   ${If} $Source == "file"
     ${NSD_Check} $FileControl

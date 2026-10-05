@@ -105,11 +105,21 @@ jobs:
                   raise SystemExit('Published releases are immutable; create a new version tag')
           else:
               pathlib.Path('notes.md').write_text(
-                  'Offline Windows GPU dictation with Canary, Parakeet and Whisper over Vulkan.\n\n'
+                  'Redux replaces the original Parakeet preset in Settings and Setup. '
+                  'Canary, Redux and Whisper use Vulkan, including AMD GPUs.\n\n'
+                  'Redux downloads 159 MB of weights and uses the fast Q4 runtime. '
+                  'Compact ternary weights are expanded losslessly in bounded 1 MiB blocks, '
+                  'preserving the existing engine optimizations.\n\n'
                   'Choose, download, switch and remove preset models in native Settings. '
                   'Setup also accepts custom HTTPS URLs and existing model files.\n\n'
-                  'The native Canary/Parakeet engine uses compact allocation metadata and bounded '
-                  'temporary buffers. Existing preferences and selected models are preserved.\n\n'
+                  'Existing preferences and selected models are preserved. Canary remains the '
+                  'default for supported languages; old Parakeet files still work as custom models.\n\n'
+                  'Local validation: 100 Czech Redux transcripts match the tested fast runtime; '
+                  '100 Canary and 100 original Parakeet transcripts are unchanged. '
+                  'Redux measured 12.32% Czech WER, about 0.21 s for warm 30 s audio and '
+                  '563 MiB peak VRAM on RX 7800 XT / Ryzen 7 7800X3D. '
+                  'Results depend on hardware, recording and background load.\n\n'
+                  f"Redux benchmark and limits: https://github.com/{os.environ['GH_REPO']}/blob/{tag}/docs/redux-benchmark.md\n\n"
                   f"Model comparisons and measurement limits: https://github.com/{os.environ['GH_REPO']}/blob/{tag}/docs/model-engine.md\n\n"
                   'Download VTD-Setup.exe for installation, or vtd-windows-x64.zip for portable use. '
                   'The installer downloads its matching vtd-runtime-x64.zip automatically. '

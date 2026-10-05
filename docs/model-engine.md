@@ -8,7 +8,7 @@ Whisper as the fallback. Canary requires an explicit language.
 
 ## Runtime and optimizations
 
-Whisper remains in `vtd-engine.exe`. Canary and Parakeet use `vtd-transcribe.exe`,
+Whisper remains in `vtd-engine.exe`. Canary, Redux and legacy Parakeet use `vtd-transcribe.exe`,
 linked statically against transcribe.cpp commit
 `e85b30edac87533168863283c1e595bf39bd7d15`. The two GGML versions never share a
 process. All engines select Vulkan explicitly, preferring a discrete GPU;
@@ -582,6 +582,20 @@ Final worker SHA-256:
 `04fd96b8cffaef60ed8d88a2f715345e9a7bc0f518faf44aafc939233359b64a`.
 
 ## Rebuilding and verification
+
+Redux replaces the Parakeet preset in the source catalog. Its `TQ1_G128` GGUF
+storage type (96) is recognized by the pinned GGML loader, then retyped to
+Q4_0 before tensor validation/allocation. Streaming upload repacks each group
+losslessly with combined input/output staging at most 1 MiB. Dense tensors
+follow the existing upload path. Quantized pointwise kernels use validated
+`[in, out]` matrices and direct matmul; legacy dense convolution shapes and
+behavior are retained. All application inference still requires Vulkan.
+
+The conversion is tested by `vtd_redux_weights`; the real-model smoke test
+also accepts the Redux variant and checks the v3 vocabulary/architecture.
+See [Redux integration evidence](redux-benchmark.md#vtd-integration-4-october-2026)
+for accuracy, memory, long-audio checks and the distinction between compact
+storage and the expanded fast GPU runtime.
 
 Run `scripts/build-windows.ps1`; it obtains the pinned native checkout, applies
 `patches/windows/transcribe.patch` idempotently, and builds each engine separately.

@@ -1,3 +1,18 @@
+diff --git a/ggml/include/ggml.h b/ggml/include/ggml.h
+index 224bdef9..ee9a4cd4 100644
+--- a/ggml/include/ggml.h
++++ b/ggml/include/ggml.h
+@@ -430,7 +430,9 @@ extern "C" {
+         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
+         GGML_TYPE_Q1_0    = 41,
+         GGML_TYPE_Q2_0    = 42,
+-        GGML_TYPE_COUNT   = 43,
++        // Redux storage format; repacked to Q4_0 before backend allocation.
++        GGML_TYPE_TQ1_G128 = 96,
++        GGML_TYPE_COUNT   = 97,
+     };
+ 
+     // [TAG_GGML_PREC]
 diff --git a/ggml/src/ggml-alloc.c b/ggml/src/ggml-alloc.c
 index a71838ea..05130dee 100644
 --- a/ggml/src/ggml-alloc.c
@@ -518,6 +533,23 @@ index 12f9b3f5..3fc89041 100644
              src << "const unsigned char " << name << "_data[" << data.size() << "] = {\n" << std::hex;
              auto bytes = reinterpret_cast<const uint8_t*>(data.data());
              for (size_t i = 0; i < data.size(); ++i) {
+diff --git a/ggml/src/ggml.c b/ggml/src/ggml.c
+index cdc10a75..cd1d6300 100644
+--- a/ggml/src/ggml.c
++++ b/ggml/src/ggml.c
+@@ -690,6 +690,12 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
+         .to_float                 = (ggml_to_float_t) dequantize_row_q2_0,
+         .from_float_ref           = (ggml_from_float_t) quantize_row_q2_0_ref,
+     },
++    [GGML_TYPE_TQ1_G128] = {
++        .type_name                = "tq1_g128",
++        .blck_size                = 256,
++        .type_size                = 56,
++        .is_quantized             = true,
++    },
+     [GGML_TYPE_Q4_0] = {
+         .type_name                = "q4_0",
+         .blck_size                = QK4_0,
 diff --git a/src/arch/canary/canary.h b/src/arch/canary/canary.h
 index 27bac011..d5969aaa 100644
 --- a/src/arch/canary/canary.h
@@ -1362,7 +1394,7 @@ index e4de9dfa..ac3c344c 100644
      bool                  w_ready   = false;
  
 diff --git a/src/arch/parakeet/model.cpp b/src/arch/parakeet/model.cpp
-index 52fef35e..80ae1ddb 100644
+index 52fef35e..4a0a7e00 100644
 --- a/src/arch/parakeet/model.cpp
 +++ b/src/arch/parakeet/model.cpp
 @@ -9,6 +9,7 @@
@@ -1383,7 +1415,29 @@ index 52fef35e..80ae1ddb 100644
  }
  
  ParakeetModel::~ParakeetModel() {
-@@ -1096,6 +1100,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
+@@ -506,6 +510,21 @@ transcribe_status load(Loader & loader, const transcribe_model_load_params * par
+         return TRANSCRIBE_ERR_GGUF;
+     }
+ 
++    // Redux stores ternary weights compactly. Repack their exact values to
++    // Q4_0 while streaming, retaining the fast Vulkan kernels. gguf_data keeps
++    // the original file types/offsets; only the allocation metadata changes.
++    for (ggml_tensor * t = ggml_get_first_tensor(m->ctx_meta); t != nullptr; t = ggml_get_next_tensor(m->ctx_meta, t)) {
++        if (t->type != GGML_TYPE_TQ1_G128) {
++            continue;
++        }
++        t->type  = GGML_TYPE_Q4_0;
++        t->nb[0] = ggml_type_size(t->type);
++        t->nb[1] = ggml_row_size(t->type, t->ne[0]);
++        for (int d = 2; d < GGML_MAX_DIMS; ++d) {
++            t->nb[d] = t->nb[d - 1] * t->ne[d - 1];
++        }
++    }
++
+     // Validate every tensor against the canonical catalog (type + shape
+     // only, so it works before the backend buffer is bound).
+     if (const transcribe_status st = build_parakeet_weights(m->ctx_meta, m->hparams, m->weights); st != TRANSCRIBE_OK) {
+@@ -1096,6 +1115,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
      // Upload the mel; the row-major [num_mels, n_frames] buffer is
      // byte-identical to the ggml ne=[n_frames, num_mels, 1, 1] input.
      ggml_backend_tensor_set(eb.mel_in, pc->mel_buf.data(), 0, pc->mel_buf.size() * sizeof(float));
@@ -1391,7 +1445,7 @@ index 52fef35e..80ae1ddb 100644
  
      transcribe::debug::dump_tensor("enc.mel.in", eb.mel_in, "encoder.mel");
  
-@@ -1176,7 +1181,6 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
+@@ -1176,7 +1196,6 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
      //   pe[i, 2k]    = sin(positions[i] * div_term[k])
      //   pe[i, 2k+1]  = cos(positions[i] * div_term[k])
      if (eb.pos_emb_in != nullptr) {
@@ -1399,7 +1453,7 @@ index 52fef35e..80ae1ddb 100644
          const int pos_len = static_cast<int>(eb.pos_emb_in->ne[1]);
  
          // Position of "relative offset 0" in the buffer: (pos_len-1)/2 for
-@@ -1186,26 +1190,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
+@@ -1186,26 +1205,7 @@ transcribe_status run_one_shot_inner(ParakeetSession *             pc,
              (!is_chunked) && (pm->hparams.enc_att_context_left >= 0 && pm->hparams.enc_att_context_right >= 0);
          const int zero_index = is_local_pe ? pm->hparams.enc_att_context_left : (pos_len - 1) / 2;
  
@@ -1427,7 +1481,7 @@ index 52fef35e..80ae1ddb 100644
  
          transcribe::debug::dump_tensor("enc.pos_emb", eb.pos_emb_in, "encoder.pos_emb");
      }
-@@ -1502,29 +1487,12 @@ static transcribe_status run_batch_encode(ParakeetSession *
+@@ -1502,29 +1502,12 @@ static transcribe_status run_batch_encode(ParakeetSession *
  
      // Positional embedding (batch-independent; depends only on T_enc).
      if (eb.pos_emb_in != nullptr) {
@@ -1458,8 +1512,48 @@ index 52fef35e..80ae1ddb 100644
      }
  
      // Prompt one-hot upload (multilingual variants). Resolves
+diff --git a/src/arch/parakeet/weights.cpp b/src/arch/parakeet/weights.cpp
+index 9a6e083e..04fd137c 100644
+--- a/src/arch/parakeet/weights.cpp
++++ b/src/arch/parakeet/weights.cpp
+@@ -705,6 +705,16 @@ using transcribe::weights::lname;
+ //              never produces a tensor the loader refuses).
+ constexpr const char * kTag = kFamilyTag;
+ 
++// Redux quantizes pointwise convolutions as [in, out] matrices; legacy
++// dense kernels retain their [1, in, out] layout. Validate both explicitly.
++static ggml_tensor * pointwise_weight(ggml_context * ctx, const char * name, int64_t in, int64_t out) {
++    const ggml_tensor * t = ggml_get_tensor(ctx, name);
++    if (t != nullptr && ggml_is_quantized(t->type)) {
++        return transcribe::weights::find_tensor(ctx, name, { TRANSCRIBE_QUANT_LINEAR_TYPES }, { in, out }, kTag);
++    }
++    return transcribe::weights::find_tensor(ctx, name, { TRANSCRIBE_QUANT_CONV_TYPES }, { 1, in, out }, kTag);
++}
++
+ #define GET_F32(slot, name, ...)                                                                          \
+     do {                                                                                                  \
+         ggml_tensor * _t =                                                                                \
+@@ -822,9 +832,16 @@ transcribe_status build_parakeet_weights(ggml_context *          ctx_meta,
+         // back to d_model.
+         GET_F32(b.norm_conv_w, lname("enc.blocks.%d.norm_conv.weight", i), d_model);
+         GET_F32(b.norm_conv_b, lname("enc.blocks.%d.norm_conv.bias", i), d_model);
+-        GET_CONV(b.conv_pw1_w, lname("enc.blocks.%d.conv.pointwise1.weight", i), 1, d_model, 2 * d_model);
++        b.conv_pw1_w =
++            pointwise_weight(ctx_meta, lname("enc.blocks.%d.conv.pointwise1.weight", i), d_model, 2 * d_model);
++        if (b.conv_pw1_w == nullptr) {
++            return TRANSCRIBE_ERR_GGUF;
++        }
+         GET_CONV(b.conv_dw_w, lname("enc.blocks.%d.conv.depthwise.weight", i), k, 1, d_model);
+-        GET_CONV(b.conv_pw2_w, lname("enc.blocks.%d.conv.pointwise2.weight", i), 1, d_model, d_model);
++        b.conv_pw2_w = pointwise_weight(ctx_meta, lname("enc.blocks.%d.conv.pointwise2.weight", i), d_model, d_model);
++        if (b.conv_pw2_w == nullptr) {
++            return TRANSCRIBE_ERR_GGUF;
++        }
+         GET_F32(b.conv_bn_w, lname("enc.blocks.%d.conv.bn.weight", i), d_model);
+         GET_F32(b.conv_bn_b, lname("enc.blocks.%d.conv.bn.bias", i), d_model);
+         if (hp.enc_conv_norm_type == ParakeetHParams::ConvNormType::BatchNorm) {
 diff --git a/src/conformer/conformer.cpp b/src/conformer/conformer.cpp
-index f811d36d..17c9d74c 100644
+index f811d36d..1e74b7eb 100644
 --- a/src/conformer/conformer.cpp
 +++ b/src/conformer/conformer.cpp
 @@ -9,17 +9,48 @@
@@ -1511,6 +1605,24 @@ index f811d36d..17c9d74c 100644
  ggml_tensor * named(ggml_tensor * t, const char * name) {
      if (t != nullptr) {
          ggml_set_name(t, name);
+@@ -348,7 +379,7 @@ ggml_tensor * conv_module(ggml_context * ctx, ggml_tensor * x, const BlockView &
+     // B == 1 for single-shot; the offline batched encoder passes B > 1.
+     const int64_t B       = x->ne[2];
+ 
+-    if (policy.direct_pw) {
++    if (policy.direct_pw || ggml_is_quantized(b.conv_pw1_w->type)) {
+         // Pointwise conv 1 as direct mul_mat in [d_model, T, B] layout.
+         // Kernel ne=[1, d_model, 2*d_model] → reshape to [d_model, 2*d_model].
+         // Force F32 accumulation for F16 weights (see mul_mat_f32acc in
+@@ -500,7 +531,7 @@ ggml_tensor * conv_module(ggml_context * ctx, ggml_tensor * x, const BlockView &
+ 
+     x = ggml_silu(ctx, x);
+ 
+-    if (policy.direct_pw) {
++    if (policy.direct_pw || ggml_is_quantized(b.conv_pw2_w->type)) {
+         // Transpose back: [T, d_model] -> [d_model, T].
+         x = ggml_cont(ctx, ggml_permute(ctx, x, 1, 0, 2, 3));
+ 
 diff --git a/src/conformer/conformer.h b/src/conformer/conformer.h
 index 7ed7af9d..e20831df 100644
 --- a/src/conformer/conformer.h
@@ -1541,26 +1653,81 @@ index fb768cba..5b05fc5d 100644
      constexpr size_t k_n = sizeof(k_archs) / sizeof(k_archs[0]);
  
 diff --git a/src/transcribe-load-common.cpp b/src/transcribe-load-common.cpp
-index 0f17b856..477cc624 100644
+index 0f17b856..a4229ce6 100644
 --- a/src/transcribe-load-common.cpp
 +++ b/src/transcribe-load-common.cpp
-@@ -474,21 +474,22 @@ transcribe_status stream_tensor_data(const std::string &  path,
+@@ -17,6 +17,7 @@
+ #include "transcribe-backend.h"
+ #include "transcribe-log.h"
+ #include "transcribe-path.h"
++#include "redux_weights.h"
+ 
+ #include <cstdint>
+ #include <cstdio>
+@@ -456,6 +457,8 @@ transcribe_status stream_tensor_data(const std::string &  path,
+ 
+     const size_t         data_offset = gguf_get_data_offset(gguf_data);
+     std::vector<uint8_t> staging;
++    // Prevent vector growth from retaining more than the transfer limit.
++    staging.reserve(vtd::redux::staging_limit);
+ 
+     for (ggml_tensor * t = ggml_get_first_tensor(ctx_meta); t != nullptr; t = ggml_get_next_tensor(ctx_meta, t)) {
+         const int64_t idx = gguf_find_tensor(gguf_data, t->name);
+@@ -474,21 +477,56 @@ transcribe_status stream_tensor_data(const std::string &  path,
              return TRANSCRIBE_ERR_GGUF;
          }
  
 -        if (staging.size() < nbytes) {
 -            staging.resize(nbytes);
-+        // Bound both the host read buffer and the GPU transfer staging buffer.
-+        // Tensor data is opaque here, so chunks do not change weight values.
-+        const size_t chunk_size = std::min(nbytes, size_t(1024 * 1024));
-+        if (staging.size() < chunk_size) {
-+            staging.resize(chunk_size);
++        const ggml_type stored_type = gguf_get_tensor_type(gguf_data, idx);
++        if (stored_type == GGML_TYPE_TQ1_G128 && t->type == GGML_TYPE_Q4_0) {
++            const size_t blocks = nbytes / vtd::redux::runtime_block;
++            if (nbytes % vtd::redux::runtime_block != 0 ||
++                gguf_get_tensor_size(gguf_data, idx) != blocks * vtd::redux::stored_block) {
++                log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: invalid Redux tensor size: %s", error_tag, t->name);
++                return TRANSCRIBE_ERR_GGUF;
++            }
++            // Input and expanded output share a bounded scratch allocation.
++            // Never retain a whole tensor or model copy in system RAM.
++            const size_t chunk_blocks = std::min(blocks, vtd::redux::blocks_per_chunk);
++            const size_t scratch_size = chunk_blocks * (vtd::redux::stored_block + vtd::redux::runtime_block);
++            if (staging.size() < scratch_size) {
++                staging.resize(scratch_size);
++            }
++            for (size_t at = 0; at < blocks; at += chunk_blocks) {
++                const size_t count        = std::min(chunk_blocks, blocks - at);
++                const size_t source_bytes = count * vtd::redux::stored_block;
++                uint8_t *    output       = staging.data() + source_bytes;
++                fin.read(reinterpret_cast<char *>(staging.data()), static_cast<std::streamsize>(source_bytes));
++                if (!fin) {
++                    log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: short read for Redux tensor: %s", error_tag, t->name);
++                    return TRANSCRIBE_ERR_GGUF;
++                }
++                vtd::redux::to_q4(staging.data(), output, count);
++                ggml_backend_tensor_set(t, output, at * vtd::redux::runtime_block, count * vtd::redux::runtime_block);
++            }
++            continue;
          }
 -        fin.read(reinterpret_cast<char *>(staging.data()), static_cast<std::streamsize>(nbytes));
 -        if (!fin) {
 -            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: short read for tensor \"%s\" (%zu bytes)", error_tag, t->name,
 -                    nbytes);
--            return TRANSCRIBE_ERR_GGUF;
++        if (stored_type != t->type) {
++            log_msg(TRANSCRIBE_LOG_LEVEL_ERROR, "%s: unsupported tensor conversion: %s", error_tag, t->name);
+             return TRANSCRIBE_ERR_GGUF;
+         }
+ 
+-        // ggml_backend_tensor_set is the right call regardless of
+-        // backend: on host buffers (CPU + Metal unified memory on
+-        // Apple Silicon) it's a memcpy; on discrete GPUs it does
+-        // the upload.
+-        ggml_backend_tensor_set(t, staging.data(), 0, nbytes);
++        // Bound both the host read buffer and the GPU transfer staging buffer.
++        // Tensor data is opaque here, so chunks do not change weight values.
++        const size_t chunk_size = std::min(nbytes, size_t(1024 * 1024));
++        if (staging.size() < chunk_size) {
++            staging.resize(chunk_size);
++        }
 +        for (size_t offset = 0; offset < nbytes; offset += chunk_size) {
 +            const size_t size = std::min(chunk_size, nbytes - offset);
 +            fin.read(reinterpret_cast<char *>(staging.data()), static_cast<std::streamsize>(size));
@@ -1570,13 +1737,7 @@ index 0f17b856..477cc624 100644
 +                return TRANSCRIBE_ERR_GGUF;
 +            }
 +            ggml_backend_tensor_set(t, staging.data(), offset, size);
-         }
--
--        // ggml_backend_tensor_set is the right call regardless of
--        // backend: on host buffers (CPU + Metal unified memory on
--        // Apple Silicon) it's a memcpy; on discrete GPUs it does
--        // the upload.
--        ggml_backend_tensor_set(t, staging.data(), 0, nbytes);
++        }
      }
  
      return TRANSCRIBE_OK;
@@ -2109,7 +2270,7 @@ index 0b5f3597..232b8397 100644
      // Optional synthesized special-token lookup. Populated only by
      // adapters that need find() to recognize literals that aren't in
 diff --git a/tests/parakeet_real_smoke.cpp b/tests/parakeet_real_smoke.cpp
-index 141b8b1c..69ae1ad6 100644
+index 141b8b1c..c8ae47ae 100644
 --- a/tests/parakeet_real_smoke.cpp
 +++ b/tests/parakeet_real_smoke.cpp
 @@ -63,6 +63,7 @@
@@ -2120,7 +2281,21 @@ index 141b8b1c..69ae1ad6 100644
  
  namespace {
  
-@@ -298,6 +299,64 @@ int main() {
+@@ -152,11 +153,10 @@ int main() {
+         }
+     }
+ 
+-    // Variant must be one of the two the converter produces. Capture
+-    // which one for the variant-dependent assertions below.
++    // Redux retains the v3 architecture and vocabulary, with ternary weights.
+     const std::string variant = transcribe_model_variant_string(model);
+     const bool        is_v2   = (variant == "tdt-0.6b-v2");
+-    const bool        is_v3   = (variant == "tdt-0.6b-v3");
++    const bool        is_v3   = (variant == "tdt-0.6b-v3" || variant == "tdt-0.6b-redux");
+     if (!is_v2 && !is_v3) {
+         std::fprintf(stderr, "FAIL: unexpected variant \"%s\"\n", variant.c_str());
+         ++g_failures;
+@@ -298,6 +298,64 @@ int main() {
          }
      }
  

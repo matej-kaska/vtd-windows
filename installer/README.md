@@ -7,9 +7,9 @@ language defaults to the Windows display language on first installation.
 The pages expose all preferences from VTD Settings: three distinct shortcuts captured by pressing a key (optionally with Ctrl, Shift or Alt),
 speech language, playback muting and startup at sign-in. The model page offers:
 
-- Canary-1B-v2 Q4_K_M (735 MB), Parakeet-TDT-0.6B-v3 Q4_K_M (485 MB), and Whisper large-v3-turbo Q5_0 (574 MB), all with pinned SHA-256. Each shows warm speed, peak VRAM and Czech WER from the same local benchmark. Canary is the default for its supported Windows languages; otherwise Whisper is selected.
+- Canary-1B-v2 Q4_K_M (735 MB), Redux (159 MB), and Whisper large-v3-turbo Q5_0 (574 MB), all with pinned SHA-256. Each shows warm speed, peak VRAM and Czech WER from the same local benchmark. Canary is the default for its supported Windows languages; otherwise Whisper is selected.
 - A custom HTTPS URL and optional SHA-256.
-- An existing Whisper GGML `.bin` or Canary/Parakeet GGUF `.gguf` file, referenced without copying it.
+- An existing Whisper GGML `.bin` or Canary/Redux/Parakeet GGUF `.gguf` file, referenced without copying it.
 
 The GGML/GGUF header check catches HTML/error pages and incompatible formats; it does
 not prove that an arbitrary custom model is complete or can run on the user's GPU.
@@ -118,7 +118,7 @@ ModelPreset=canary
 
 Keys are Windows virtual-key codes: F1=112 through F24=135; add 256 for Shift, 512 for Ctrl and 1024 for Alt. For example, Ctrl+Shift+F9=888 and Volume Mute=173. Booleans are 0/1.
 Omitted fields preserve upgrade preferences or use first-install defaults.
-For a preset, set `ModelSource=default` and `ModelPreset=canary`, `parakeet` or `whisper`. Canary requires an explicit supported language; Parakeet allows `auto`.
+For a preset, set `ModelSource=default` and `ModelPreset=canary`, `redux` or `whisper`. Canary requires an explicit supported language; Redux allows `auto`.
 For a custom download, set `ModelSource=url`, `ModelUrl=https://...` and optionally
 `ModelHash=<64 hex characters>`. For an existing file, set `ModelSource=file` and
 `ModelFile=C:\path\model.bin`. Exit code 0 means success, nonzero means failure.

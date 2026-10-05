@@ -25,6 +25,7 @@ if(MSVC AND CMAKE_GENERATOR MATCHES "Ninja")
 endif()
 add_compile_options(/Gy /Gw)
 function(vtd_add_bridge)
+    target_include_directories(transcribe PRIVATE "${VTD_ROOT}/native")
     # The exact Q8 kernel mirrors this pinned CPU backend's AVX2/FMA reduction.
     # Other architectures, dynamic backends and AVX512 keep upstream fp32.
     if(MSVC AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(AMD64|x86_64)$"
@@ -44,6 +45,9 @@ function(vtd_add_bridge)
     add_library(vtd-transcribe-bridge STATIC "${VTD_ROOT}/native/transcribe_bridge.cpp")
     target_link_libraries(vtd-transcribe-bridge PRIVATE transcribe)
     if(TRANSCRIBE_BUILD_TESTS)
+        add_executable(vtd-redux-weights-test "${VTD_ROOT}/native/tests/redux_weights.cpp")
+        target_include_directories(vtd-redux-weights-test PRIVATE "${VTD_ROOT}/native")
+        add_test(NAME vtd_redux_weights COMMAND vtd-redux-weights-test)
         add_executable(vtd-allocator-memory-test "${VTD_ROOT}/native/tests/allocator_memory.c")
         target_include_directories(vtd-allocator-memory-test PRIVATE "${CMAKE_SOURCE_DIR}/ggml/src")
         target_link_libraries(vtd-allocator-memory-test PRIVATE ggml)

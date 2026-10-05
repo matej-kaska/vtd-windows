@@ -25,6 +25,23 @@ https://huggingface.co/handy-computer/parakeet-tdt-0.6b-v3-gguf
 These converted and quantized weights are derived from the NVIDIA models;
 VTD downloads the published GGUF files without further weight changes.
 
+Optional Redux model weights (replaces the Parakeet preset)
+Creator: Moondream, derived from NVIDIA Parakeet-TDT-0.6B-v3
+https://huggingface.co/moondream/parakeet-redux
+License: Creative Commons Attribution 4.0 International (CC BY 4.0)
+License text: https://creativecommons.org/licenses/by/4.0/legalcode
+GGUF conversion by Nairod785:
+https://huggingface.co/Nairod785/parakeet-redux-gguf
+VTD downloads TQ1_Q8_0 weights and losslessly repacks ternary tensors to
+Q4_0 at load time for Vulkan. Weight values and FP16 scales are preserved.
+
+Redux TQ1_G128 layout and Q4_0 repacking adapted from
+https://github.com/NairoDorian/transcribe.cpp
+Revision: ba949120d60f29daaaa13eec65b9c28c2c2112a6
+MIT License, Copyright (c) 2026 The transcribe.cpp authors
+[Full text: L002]
+VTD uses bounded streaming conversion in its existing optimized engine.
+
 Repeated license texts appear once in the SHARED LICENSE TEXTS section below.
 Each [Full text: Lnnn] reference incorporates that complete text for the
 component and source license file listed above it. Copyright notices and
